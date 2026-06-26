@@ -11,6 +11,13 @@ RATE_LIMIT_IP_MAX = "80"
 RATE_LIMIT_USER_MAX = "200"
 RATE_LIMIT_WINDOW_SEC = "60"
 SUPABASE_STORAGE_BUCKET ="note"
+JWT_ACCESS_SECRET="9sK7pR2tG5bN8dQ4vX1zF6cM3jL0aW5h"
+JWT_REFRESH_SECRET="B2gT7nD4sP9mR6kF1cV5zX8jL3dQ0wH7"
+SUPABASE_URL="https://qdayueqodhquefczraii.supabase.co"
+REDIS_URL="https://master-hound-77781.upstash.io"
+APP_BASE_URL="http://n.lau.cc.cd"
+EMAIL_FROM= "admin@fred.dpdns.org"
+
 [triggers]
 crons = [ "0 2 * * *" ]
 
