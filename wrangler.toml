@@ -1,0 +1,15 @@
+name = "note-pg-redis-worker"
+main = "src/index.ts"
+compatibility_date = "2026-06-01"
+workers_dev = true
+
+[vars]
+ACCESS_TOKEN_EXPIRE = "1h"
+REFRESH_TOKEN_EXPIRE = "30d"
+BCRYPT_SALT_ROUND = "10"
+RATE_LIMIT_IP_MAX = "80"
+RATE_LIMIT_USER_MAX = "200"
+RATE_LIMIT_WINDOW_SEC = "60"
+SUPABASE_STORAGE_BUCKET ="note"
+[triggers]
+crons = [ "0 2 * * *" ]
