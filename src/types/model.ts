@@ -2,6 +2,7 @@ import type { JWTPayload } from "jose";
 
 export type UserJWTPayload = JWTPayload & {
   uid: number;
+  role?: string;
 };
 
 export type UserRow = {

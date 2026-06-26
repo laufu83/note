@@ -13,3 +13,7 @@ RATE_LIMIT_WINDOW_SEC = "60"
 SUPABASE_STORAGE_BUCKET ="note"
 [triggers]
 crons = [ "0 2 * * *" ]
+
+compatibility_flags = [
+  "nodejs_compat"
+]

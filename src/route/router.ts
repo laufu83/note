@@ -10,6 +10,8 @@ import { jsonResp } from "../utils/response";
 import { CODE } from "../types/response";
 import { snakeToCamel } from "../utils/naming";
 import type { Env } from "../types/env";
+import type { UserJWTPayload } from "../types/model";
+import { getImageCaptcha, verifyImageCaptcha } from '../controller/captcha.controller'
 
 type RouteRule = {
   path: string | RegExp;
@@ -17,7 +19,7 @@ type RouteRule = {
   isPublic: boolean;
   handler: (
     env: Env,
-    uid: number | null,
+    payload: UserJWTPayload | null,
     body?: any,
     search?: URLSearchParams,
     pathParam?: string,
@@ -50,7 +52,6 @@ const routeList: RouteRule[] = [
     handler: async (e, _, __, s, p) =>
       ShareController.getPublicShare(e, p!, s?.get("pwd")),
   },
-
   {
     path: /^\/api\/user\/activate$/,
     method: "GET",
@@ -61,13 +62,13 @@ const routeList: RouteRule[] = [
     path: "/api/user/change-pwd",
     method: "POST",
     isPublic: false,
-    handler: async (e, u, b) => UserController.changePwd(e, u!, b),
+    handler: async (e, payload, b) => UserController.changePwd(e, payload!.uid, b),
   },
   {
     path: "/api/user/destroy",
     method: "DELETE",
     isPublic: false,
-    handler: async (e, u) => UserController.destroyAccount(e, u!),
+    handler: async (e, payload) => UserController.destroyAccount(e, payload!.uid),
   },
   {
     path: "/api/user/reset-pwd-send",
@@ -88,143 +89,173 @@ const routeList: RouteRule[] = [
     handler: (e, _, b) => UserController.resendActivateMail(e, b),
   },
   {
+    path: "/api/user/list",
+    method: "GET",
+    isPublic: false,
+    handler: async (e, payload, _b) => UserController.getUserList(e, payload!)
+  },
+  {
+    path: "/api/user/update",
+    method: "POST",
+    isPublic: false,
+    handler: async (e, payload, b) => UserController.updateUserInfo(e, payload!, b)
+  },
+  {
+    path: "/api/user/admin-reset-pwd",
+    method: "POST",
+    isPublic: false,
+    handler: async (e, payload, b) => UserController.adminResetUserPwd(e, payload!, b)
+  },
+  {
     path: "/api/category",
     method: "POST",
     isPublic: false,
-    handler: async (e, u, b) => CategoryController.create(e, u!, b),
+    handler: async (e, payload, b) => CategoryController.create(e, payload!.uid, b),
   },
   {
     path: "/api/category",
     method: "GET",
     isPublic: false,
-    handler: async (e, u) => CategoryController.list(e, u!),
+    handler: async (e, payload) => CategoryController.list(e, payload!.uid),
   },
   {
     path: /^\/api\/category\/(\d+)$/,
     method: "PUT",
     isPublic: false,
-    handler: async (e, u, b, _, p) => CategoryController.update(e, u!, p!, b),
+    handler: async (e, payload, b, _, p) => CategoryController.update(e, payload!.uid, p!, b),
   },
   {
     path: /^\/api\/category\/(\d+)$/,
     method: "DELETE",
     isPublic: false,
-    handler: async (e, u, _, __, p) => CategoryController.del(e, u!, p!),
+    handler: async (e, payload, _, __, p) => CategoryController.del(e, payload!.uid, p!),
   },
-
   {
     path: "/api/tag",
     method: "POST",
     isPublic: false,
-    handler: async (e, u, b) => TagController.create(e, u!, b),
+    handler: async (e, payload, b) => TagController.create(e, payload!.uid, b),
   },
   {
     path: "/api/tag",
     method: "GET",
     isPublic: false,
-    handler: async (e, u) => TagController.list(e, u!),
+    handler: async (e, payload) => TagController.list(e, payload!.uid),
   },
   {
     path: /^\/api\/tag\/(\d+)$/,
     method: "DELETE",
     isPublic: false,
-    handler: async (e, u, _, __, p) => TagController.del(e, u!, p!),
+    handler: async (e, payload, _, __, p) => TagController.del(e, payload!.uid, p!),
   },
-
   {
     path: "/api/note",
     method: "POST",
     isPublic: false,
-    handler: async (e, u, b) => NoteController.create(e, u!, b),
+    handler: async (e, payload, b) => NoteController.create(e, payload!.uid, b),
   },
   {
     path: "/api/note",
     method: "GET",
     isPublic: false,
-    handler: async (e, u, _, s) => NoteController.list(e, u!, s!),
+    handler: async (e, payload, _, s) => NoteController.list(e, payload!.uid, s!),
   },
   {
     path: /^\/api\/note\/(\d+)$/,
     method: "GET",
     isPublic: false,
-    handler: async (e, u, _, __, p) => NoteController.detail(e, u!, p!),
+    handler: async (e, payload, _, __, p) => NoteController.detail(e, payload!.uid, p!),
   },
   {
     path: /^\/api\/note\/(\d+)$/,
     method: "PUT",
     isPublic: false,
-    handler: async (e, u, b, _, p) => NoteController.update(e, u!, p!, b),
+    handler: async (e, payload, b, _, p) => NoteController.update(e, payload!.uid, p!, b),
   },
   {
     path: /^\/api\/note\/(\d+)$/,
     method: "DELETE",
     isPublic: false,
-    handler: async (e, u, _, __, p) => NoteController.moveRecycle(e, u!, p!),
+    handler: async (e, payload, _, __, p) => NoteController.moveRecycle(e, payload!.uid, p!),
   },
   {
     path: /^\/api\/note\/(\d+)\/restore$/,
     method: "PUT",
     isPublic: false,
-    handler: async (e, u, _, __, p) => NoteController.restore(e, u!, p!),
+    handler: async (e, payload, _, __, p) => NoteController.restore(e, payload!.uid, p!),
   },
   {
     path: /^\/api\/note\/(\d+)\/destroy$/,
     method: "DELETE",
     isPublic: false,
-    handler: async (e, u, _, __, p) =>
-      NoteController.permanentDelete(e, u!, p!),
+    handler: async (e, payload, _, __, p) =>
+      NoteController.permanentDelete(e, payload!.uid, p!),
   },
   {
     path: /^\/api\/note\/(\d+)\/history$/,
     method: "GET",
     isPublic: false,
-    handler: async (e, u, _, __, p) => NoteController.getHistory(e, u!, p!),
+    handler: async (e, payload, _, __, p) => NoteController.getHistory(e, payload!.uid, p!),
   },
   {
     path: "/api/note/rollback",
     method: "POST",
     isPublic: false,
-    handler: async (e, u, b) =>
-      NoteController.rollback(e, u!, b.noteId, b.historyId),
+    handler: async (e, payload, b) =>
+      NoteController.rollback(e, payload!.uid, b.noteId, b.historyId),
   },
-
   {
     path: "/api/file/upload",
     method: "POST",
+    handler: async (e, payload, b) => FileController.upload(e, payload!.uid, b.file),
     isPublic: false,
-    handler: async (e, u, b) => FileController.upload(e, u!, b.file),
   },
   {
     path: "/api/file",
     method: "GET",
     isPublic: false,
-    handler: async (e, u) => FileController.list(e, u!),
+    handler: async (e, payload) => FileController.list(e, payload!.uid),
   },
   {
     path: "/api/file/delete",
     method: "POST",
     isPublic: false,
-    handler: async (e, u, b) => FileController.delete(e, u!, b.path),
+    handler: async (e, payload, b) => FileController.delete(e, payload!.uid, b.path),
   },
-
   {
     path: "/api/share/create",
     method: "POST",
     isPublic: false,
-    handler: async (e, u, b) => ShareController.create(e, u!, b),
+    handler: async (e, payload, b) => ShareController.create(e, payload!.uid, b),
   },
   {
     path: "/api/share/list",
     method: "GET",
     isPublic: false,
-    handler: async (e, u) => ShareController.myShareList(e, u!),
+    handler: async (e, payload) => ShareController.myShareList(e, payload!.uid),
   },
   {
     path: /^\/api\/share\/(\d+)$/,
     method: "DELETE",
     isPublic: false,
-    handler: async (e, u, _, __, p) => ShareController.deleteShare(e, u!, p!),
+    handler: async (e, payload, _, __, p) => ShareController.deleteShare(e, payload!.uid, p!),
   },
+    // ========== 新增滑块验证码公开路由 ==========
+  {
+    path: "/api/captcha/img",
+    method: "GET",
+    isPublic: true,
+    handler: async (env, _, __, search) => getImageCaptcha(env),
+  },
+  {
+    path: "/api/captcha/verify",
+    method: "POST",
+    isPublic: true,
+     handler: async (env, _, body) => {
+    const { key, code } = body
+    return verifyImageCaptcha(env, key, code)
+  }
+}
 ];
 
 export async function dispatch(req: Request, env: Env): Promise<Response> {
@@ -265,7 +296,6 @@ export async function dispatch(req: Request, env: Env): Promise<Response> {
     } else {
       try {
         const rawBody = await req.json();
-        // 核心：统一下划线转小驼峰，前端 snake_case → 后端 camelCase
         body = snakeToCamel(rawBody);
       } catch {
         body = undefined;
@@ -277,10 +307,10 @@ export async function dispatch(req: Request, env: Env): Promise<Response> {
     return await matched.handler(env, null, body, search, pathParam);
   }
 
-  const { error, uid } = await authMiddleware(req, env);
+  const { error, payload } = await authMiddleware(req, env);
   if (error) return error;
-  const userLimit = await rateLimitCheck(req, uid, env);
+  const userLimit = await rateLimitCheck(req, payload?.uid, env);
   if (userLimit) return userLimit;
 
-  return await matched.handler(env, uid, body, search, pathParam);
+  return await matched.handler(env, payload!, body, search, pathParam);
 }
