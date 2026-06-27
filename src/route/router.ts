@@ -13,6 +13,7 @@ import { snakeToCamel } from "../utils/naming";
 import type { Env } from "../types/env";
 import type { UserJWTPayload } from "../types/model";
 import { getImageCaptcha, verifyImageCaptcha } from '../controller/captcha.controller'
+import { SystemConfigController} from '../controller/system.controller'
 
 type RouteRule = {
   path: string | RegExp;
@@ -286,7 +287,43 @@ const routeList: RouteRule[] = [
      handler: async (env, _, body) => {
     const { key, code } = body
     return verifyImageCaptcha(env, key, code)
-  }
+  }  
+}, // 系统配置路由
+{
+    path: "/api/system/config",
+    method: "GET",
+    isPublic: true,
+    handler: (env) => SystemConfigController.getPublicConfig(env)
+  },
+  {
+    path: "/api/system/config/list",
+    method: "GET",
+    isPublic: false,
+    handler: (env, payload) => SystemConfigController.getConfigList(env, payload)
+  },
+  {
+  path: "/api/system/config/page",
+  method: "GET",
+  isPublic: false,
+  handler: (env, payload, _, search) => SystemConfigController.getConfigPageList(env, payload, search)
+},
+  {
+    path: "/api/system/config/batch",
+    method: "PUT",
+    isPublic: false,
+    handler: (env, payload, body) => SystemConfigController.batchUpdateSystemConfig(env, payload, body)
+  },
+  {
+    path: "/api/system/config/add",
+    method: "POST",
+    isPublic: false,
+    handler: (env, payload, body) => SystemConfigController.addConfigItem(env, payload, body)
+  },
+{
+  path: "/api/system/config/delete",
+  method: "DELETE",
+  isPublic: false,
+  handler: (env, payload, _, search) => SystemConfigController.deleteConfigItem(env, payload, search)
 }
 ];
 
