@@ -364,8 +364,7 @@ export async function dispatch(req: Request, env: Env): Promise<Response> {
       body = { file: form.get("file") };
     } else {
       try {
-        const rawBody = await req.json();
-        body = snakeToCamel(rawBody);
+        body = await req.json();
       } catch {
         body = undefined;
       }

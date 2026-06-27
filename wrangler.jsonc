@@ -1,0 +1,43 @@
+{
+  "name": "note",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-01",
+  "workers_dev": true,
+  "observability": {
+    "enabled": true
+  },
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "4f01fef5b951438c9f91c8ee68dcce3e",
+      "localConnectionString": ""
+    }
+  ],
+  "vars": {
+    "ACCESS_TOKEN_EXPIRE": "1h",
+    "REFRESH_TOKEN_EXPIRE": "30d",
+    "BCRYPT_SALT_ROUND": "10",
+    "RATE_LIMIT_IP_MAX": "80",
+    "RATE_LIMIT_USER_MAX": "200",
+    "RATE_LIMIT_WINDOW_SEC": "60",
+    "SUPABASE_STORAGE_BUCKET": "note",
+    "JWT_ACCESS_SECRET": "9sK7pR2tG5bN8dQ4vX1zF6cM3jL0aW5h",
+    "JWT_REFRESH_SECRET": "B2gT7nD4sP9mR6kF1cV5zX8jL3dQ0wH7",
+    "SUPABASE_URL": "https://qdayueqodhquefczraii.supabase.co",
+    "REDIS_URL": "https://master-hound-77781.upstash.io",
+    "APP_BASE_URL": "http://n.lau.cc.cd",
+    "EMAIL_FROM": "admin@fred.dpdns.org",
+    "DATABASE_URL": "",
+    "REDIS_TOKEN": "",
+    "SUPABASE_SERVICE_KEY": "",
+    "RESEND_API_KEY": ""
+  },
+  "triggers": {
+    "crons": [
+      "0 2 * * *"
+    ]
+  }
+}

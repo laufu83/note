@@ -1,3 +1,5 @@
+import type { Hyperdrive } from "@cloudflare/workers-types";
+
 export type Env = {
   DATABASE_URL: string;
   REDIS_URL: string;
@@ -18,4 +20,6 @@ export type Env = {
    // Resend 邮件配置
   RESEND_API_KEY: string;
   EMAIL_FROM: string;
+   // Hyperdrive 绑定
+  HYPERDRIVE: Hyperdrive;
 };

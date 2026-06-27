@@ -13,9 +13,9 @@ export const NoteController = {
       content?: string;
       categoryIds?: number[];
       tagNames?: string[];
-      isDraft?: boolean;
-      isTop?: boolean;
-      isStar?: boolean;
+      is_draft?: boolean;
+      is_top?: boolean;
+      is_star?: boolean;
     }
   ) {
     const pool = createPgPool(env);
@@ -23,7 +23,7 @@ export const NoteController = {
     const { rows } = await pool.query(
       `INSERT INTO notes(user_id,title,content,is_draft,is_top,is_star,created_at,updated_at)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-      [uid, body.title, body.content ?? null, body.isDraft ?? false, body.isTop ?? false, body.isStar ?? false, now, now]
+      [uid, body.title, body.content ?? null, body.is_draft ?? false, body.is_top ?? false, body.is_star ?? false, now, now]
     );
     const noteId = rows[0].id;
     await pool.query(`INSERT INTO note_history(note_id,title,content,created_at) VALUES($1,$2,$3,$4)`, [noteId, body.title, body.content, now]);
@@ -50,8 +50,9 @@ async list(env: Env, uid: number, search: URLSearchParams) {
   const page = parseInt(search.get("page") || "1");
   const size = parseInt(search.get("size") || "20");
   const keyword = search.get("q");
-  const isDraft = search.get("draft");
-  const isStar = search.get("star"); 
+  const isDraft = search.get("is_draft");
+  const isStar = search.get("is_star"); 
+  const isTop = search.get("is_top"); 
    // 兼容 trash=1 / is_delete=true 两种传参
   const isDelete = search.get("trash") === "1" || search.get("is_delete") === "true";
   const offset = (page - 1) * size;
@@ -98,11 +99,15 @@ async list(env: Env, uid: number, search: URLSearchParams) {
   }
   if (isDraft !== null) {
     sql += ` AND n.is_draft=$${idx++}`;
-    params.push(isDraft === "1");
+    params.push(isDraft === "true");
   }
   if (isStar !== null) {
     sql += ` AND n.is_star=$${idx++}`;
-    params.push(isStar === "1");
+    params.push(isStar === "true");
+  }
+  if (isTop !== null) {
+    sql += ` AND n.is_top=$${idx++}`;
+    params.push(isTop === "true");
   }
 
   sql += ` ORDER BY n.is_top DESC, n.updated_at DESC LIMIT $${idx++} OFFSET $${idx++}`;
@@ -156,9 +161,9 @@ async list(env: Env, uid: number, search: URLSearchParams) {
   body: {
     title?: string;
     content?: string;
-    isDraft?: boolean;
-    isTop?: boolean;
-    isStar?: boolean;
+    is_draft?: boolean;
+    is_top?: boolean;
+    is_star?: boolean;
     categoryIds?: number[];
     tagNames?: string[];
   }
@@ -194,17 +199,17 @@ async list(env: Env, uid: number, search: URLSearchParams) {
       fields.push(`content=$${idx++}`);
       params.push(body.content);
     }
-    if (body.isDraft !== undefined) {
+    if (body.is_draft !== undefined) {
       fields.push(`is_draft=$${idx++}`);
-      params.push(body.isDraft);
+      params.push(body.is_draft);
     }
-    if (body.isTop !== undefined) {
+    if (body.is_top !== undefined) {
       fields.push(`is_top=$${idx++}`);
-      params.push(body.isTop);
+      params.push(body.is_top);
     }
-    if (body.isStar !== undefined) {
+    if (body.is_star !== undefined) {
       fields.push(`is_star=$${idx++}`);
-      params.push(body.isStar);
+      params.push(body.is_star);
     }
     params.push(now, nid, uid);
     const sql = `UPDATE notes SET ${fields.join(",")},updated_at=$${idx++} WHERE id=$${idx++} AND user_id=$${idx++} RETURNING *`;
@@ -366,8 +371,8 @@ async exportAllNote(
   const page = parseInt(search.get("page") || "1");
   const size = parseInt(search.get("size") || "0");
   const keyword = search.get("q")?.trim();
-  const isDraftStr = search.get("draft");
-  const isStarStr = search.get("star");
+  const isDraftStr = search.get("is_draft");
+  const isStarStr = search.get("is_star");
   // 兼容两种回收站参数
   const isDelete = search.get("trash") === "1" || search.get("is_delete") === "true";
   const offset = size > 0 ? (page - 1) * size : 0;
@@ -418,13 +423,13 @@ async exportAllNote(
   // 草稿筛选
   if (isDraftStr !== null) {
     sql += ` AND n.is_draft = $${idx++}`;
-    params.push(isDraftStr === "1");
+    params.push(isDraftStr === "true");
   }
 
   // 星标筛选
   if (isStarStr !== null) {
     sql += ` AND n.is_star = $${idx++}`;
-    params.push(isStarStr === "1");
+    params.push(isStarStr === "true");
   }
 
   // 排序
