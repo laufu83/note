@@ -2,6 +2,7 @@ name = "note-pg-redis-worker"
 main = "src/index.ts"
 compatibility_date = "2026-06-01"
 workers_dev = true
+compatibility_flags = ["nodejs_compat"]
 
 [vars]
 ACCESS_TOKEN_EXPIRE = "1h"
@@ -17,6 +18,11 @@ SUPABASE_URL="https://qdayueqodhquefczraii.supabase.co"
 REDIS_URL="https://master-hound-77781.upstash.io"
 APP_BASE_URL="http://n.lau.cc.cd"
 EMAIL_FROM= "admin@fred.dpdns.org"
-compatibility_flags = ["nodejs_compat"]
+DATABASE_URL=""
+REDIS_TOKEN=""
+SUPABASE_SERVICE_KEY=""
+RESEND_API_KEY=""
+
+
 [triggers]
 crons = [ "0 2 * * *" ]
