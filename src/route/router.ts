@@ -1,4 +1,5 @@
 import { UserController } from "../controller/user.controller";
+import { AuthController } from "../controller/auth.controller";
 import { NoteController } from "../controller/note.controller";
 import { CategoryController } from "../controller/category.controller";
 import { TagController } from "../controller/tag.controller";
@@ -31,19 +32,19 @@ const routeList: RouteRule[] = [
     path: "/api/user/register",
     method: "POST",
     isPublic: true,
-    handler: async (e, _, b) => UserController.register(e, b),
+    handler: async (e, _, b) => AuthController.register(e, b),
   },
   {
     path: "/api/user/login",
     method: "POST",
     isPublic: true,
-    handler: async (e, _, b) => UserController.login(e, b),
+    handler: async (e, _, b) => AuthController.login(e, b),
   },
   {
     path: "/api/user/refresh-token",
     method: "POST",
     isPublic: true,
-    handler: async (e, _, b) => UserController.refreshToken(e, b),
+    handler: async (e, _, b) => AuthController.refreshToken(e, b),
   },
   {
     path: /^\/api\/share\/([\da-fA-F]{16,32})$/,
@@ -56,7 +57,7 @@ const routeList: RouteRule[] = [
     path: /^\/api\/user\/activate$/,
     method: "GET",
     isPublic: true,
-    handler: (e, _, __, s) => UserController.activateUser(e, s?.get("token")),
+    handler: (e, _, __, s) => AuthController.activateUser(e, s?.get("token")),
   },
   {
     path: "/api/user/change-pwd",
@@ -74,19 +75,31 @@ const routeList: RouteRule[] = [
     path: "/api/user/reset-pwd-send",
     method: "POST",
     isPublic: true,
-    handler: (e, _, b) => UserController.resetPwdSend(e, b),
+    handler: (e, _, b) => AuthController.resetPwdSend(e, b),
   },
   {
     path: "/api/user/reset-pwd",
     method: "POST",
     isPublic: true,
-    handler: (e, _, b) => UserController.resetPwd(e, b),
+    handler: (e, _, b) => AuthController.resetPwd(e, b),
   },
   {
     path: "/api/user/resend-activate",
     method: "POST",
     isPublic: true,
-    handler: (e, _, b) => UserController.resendActivateMail(e, b),
+    handler: (e, _, b) => AuthController.resendActivateMail(e, b),
+  },
+  {
+  path: "/api/user/change-email",
+  method: "GET",
+  isPublic: true,
+  handler: async (e, _, __, s) => AuthController.activateChangeEmail(e, s)
+},
+    {
+    path: "/api/user/info",
+    method: "GET",
+    isPublic: false,
+    handler: async (e, payload, _b) => UserController.getCurrentUserInfo(e, payload!.uid)
   },
   {
     path: "/api/user/list",
@@ -99,6 +112,12 @@ const routeList: RouteRule[] = [
     method: "POST",
     isPublic: false,
     handler: async (e, payload, b) => UserController.updateUserInfo(e, payload!, b)
+  },
+    {
+    path: "/api/user/profile",
+    method: "POST",
+    isPublic: false,
+    handler: async (e, payload, b) => UserController.updateProfile(e, payload!.uid, b)
   },
   {
     path: "/api/user/admin-reset-pwd",
@@ -190,7 +209,12 @@ const routeList: RouteRule[] = [
     isPublic: false,
     handler: async (e, payload, _, __, p) =>
       NoteController.permanentDelete(e, payload!.uid, p!),
-  },
+  },{
+  path: "/api/note/trash/clear",
+  method: "DELETE",
+  isPublic: false,
+  handler: async (e, payload) => NoteController.clearTrash(e, payload!.uid)
+},
   {
     path: /^\/api\/note\/(\d+)\/history$/,
     method: "GET",
@@ -204,6 +228,14 @@ const routeList: RouteRule[] = [
     handler: async (e, payload, b) =>
       NoteController.rollback(e, payload!.uid, b.noteId, b.historyId),
   },
+  {
+    path: "/api/note/export",
+    method: "GET",
+    isPublic: false,
+    handler: async (e, payload, b, s) =>
+      NoteController.exportAllNote(e, payload!.uid, s!),
+  },
+  
   {
     path: "/api/file/upload",
     method: "POST",
@@ -309,6 +341,8 @@ export async function dispatch(req: Request, env: Env): Promise<Response> {
 
   const { error, payload } = await authMiddleware(req, env);
   if (error) return error;
+  if (!payload)  return jsonResp(null, CODE.UNAUTH, "身份验证失败");
+  
   const userLimit = await rateLimitCheck(req, payload?.uid, env);
   if (userLimit) return userLimit;
 

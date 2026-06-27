@@ -17,10 +17,6 @@ SUPABASE_URL="https://qdayueqodhquefczraii.supabase.co"
 REDIS_URL="https://master-hound-77781.upstash.io"
 APP_BASE_URL="http://n.lau.cc.cd"
 EMAIL_FROM= "admin@fred.dpdns.org"
-
+compatibility_flags = ["nodejs_compat"]
 [triggers]
 crons = [ "0 2 * * *" ]
-
-compatibility_flags = [
-  "nodejs_compat"
-]

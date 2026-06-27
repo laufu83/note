@@ -3,6 +3,8 @@ import { dispatch } from "./route/router";
 import { createPgPool } from "./config/pg";
 import { getNowISO } from "./utils/time";
 import type { Env } from "./types/env";
+// 从 Cloudflare Workers 导入类型
+import type { ScheduledEvent } from "@cloudflare/workers-types";
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {

@@ -3,7 +3,7 @@ import { getNowISO } from "../utils/time";
 import { jsonResp } from "../utils/response";
 import { CODE } from "../types/response";
 import type { Env } from "../types/env";
-
+import{snakeToCamel} from "../utils/naming"
 export const NoteController = {
   async create(
     env: Env,
@@ -51,13 +51,21 @@ async list(env: Env, uid: number, search: URLSearchParams) {
   const size = parseInt(search.get("size") || "20");
   const keyword = search.get("q");
   const isDraft = search.get("draft");
-  const isStar = search.get("star");
-  const isDelete = search.get("trash") === "1";
+  const isStar = search.get("star"); 
+   // 兼容 trash=1 / is_delete=true 两种传参
+  const isDelete = search.get("trash") === "1" || search.get("is_delete") === "true";
   const offset = (page - 1) * size;
 
   let sql = `
     SELECT 
-      n.*,
+     n.id,
+      n.title,
+      n.is_top,
+      n.is_draft,
+      n.is_star,
+      n.is_delete,
+      n.created_at,
+      n.updated_at,
       COUNT(*) OVER() total,
       COALESCE(c.category_ids, '[]'::json) AS "categoryIds",
       COALESCE(c.category_names, '[]'::json) AS "categoryNames",
@@ -297,4 +305,138 @@ async list(env: Env, uid: number, search: URLSearchParams) {
     await pool.query(`UPDATE notes SET title=$1,content=$2,updated_at=$3 WHERE id=$4`, [old.title, old.content, now, nid]);
     return jsonResp(null, CODE.SUCCESS, "版本回滚成功");
   },
+  /**
+ * 清空回收站：永久删除当前用户所有移入回收站的笔记
+ */
+async clearTrash(
+  env: Env,
+  uid: number
+) {  
+  const pool = createPgPool(env);
+
+  // 事务：先删除关联标签、分类关系，再删除笔记主表数据
+  try {
+    await pool.query("BEGIN");
+
+    // 1. 查询当前用户回收站所有笔记ID
+    const noteRes = await pool.query(
+      `SELECT id FROM notes WHERE user_id = $1 AND is_delete = true`,
+      [uid]
+    );
+    const noteIds = noteRes.rows.map(item => item.id);
+    if (noteIds.length === 0) {
+      await pool.query("ROLLBACK");
+      return jsonResp(null, CODE.PARAM_ERR, "回收站暂无数据可清空");
+    }
+
+    // 2. 删除笔记-分类关联
+    await pool.query(
+      `DELETE FROM note_category_rel WHERE note_id = ANY($1::bigint[])`,
+      [noteIds]
+    );
+    // 3. 删除笔记-标签关联
+    await pool.query(
+      `DELETE FROM note_tag_rel WHERE note_id = ANY($1::bigint[])`,
+      [noteIds]
+    );
+    // 4. 永久删除笔记主表
+    await pool.query(
+      `DELETE FROM notes WHERE user_id = $1 AND is_delete = true`,
+      [uid]
+    );
+
+    await pool.query("COMMIT");
+    return jsonResp(null, CODE.SUCCESS, "回收站清空成功");
+  } catch (err) {
+    await pool.query("ROLLBACK");
+    return jsonResp(null, CODE.FAIL, "清空回收站失败，请稍后重试");
+  }
+},
+/**
+ * 一键导出全部笔记为 Markdown 压缩包
+ */
+/**
+ * 一键导出笔记原始数据（前端本地打包MD/ZIP）
+ */
+async exportAllNote(
+  env: Env,
+  uid: number,
+  search: URLSearchParams
+) {
+  const page = parseInt(search.get("page") || "1");
+  const size = parseInt(search.get("size") || "0");
+  const keyword = search.get("q")?.trim();
+  const isDraftStr = search.get("draft");
+  const isStarStr = search.get("star");
+  // 兼容两种回收站参数
+  const isDelete = search.get("trash") === "1" || search.get("is_delete") === "true";
+  const offset = size > 0 ? (page - 1) * size : 0;
+
+  const pool = createPgPool(env);
+  let sql = `
+    SELECT 
+      n.id,
+      n.title,
+      n.content,
+      n.is_top,
+      n.is_draft,
+      n.is_star,
+      n.is_delete,
+      n.created_at,
+      n.updated_at,
+      COALESCE(c.category_ids, '[]'::json) AS "categoryIds",
+      COALESCE(c.category_names, '[]'::json) AS "categoryNames",
+      COALESCE(t.tag_names, '[]'::json) AS "tagNames"
+    FROM notes n
+    LEFT JOIN (
+      SELECT 
+        ncr.note_id,
+        json_agg(ncr.category_id) AS category_ids,
+        json_agg(nc.name) AS category_names
+      FROM note_category_rel ncr
+      LEFT JOIN note_category nc ON ncr.category_id = nc.id
+      GROUP BY ncr.note_id
+    ) c ON n.id = c.note_id
+    LEFT JOIN (
+      SELECT ntr.note_id, json_agg(nt.name) tag_names
+      FROM note_tag_rel ntr
+      LEFT JOIN note_tag nt ON ntr.tag_id = nt.id
+      GROUP BY ntr.note_id
+    ) t ON n.id = t.note_id
+    WHERE n.user_id = $1 AND n.is_delete = $2
+  `;
+
+  const params: any[] = [uid, isDelete];
+  let idx = 3;
+
+  // 关键词全文检索
+  if (keyword) {
+    sql += ` AND n.note_tsv @@ to_tsquery('simple', $${idx++})`;
+    params.push(keyword.replace(/\s+/g, " & "));
+  }
+
+  // 草稿筛选
+  if (isDraftStr !== null) {
+    sql += ` AND n.is_draft = $${idx++}`;
+    params.push(isDraftStr === "1");
+  }
+
+  // 星标筛选
+  if (isStarStr !== null) {
+    sql += ` AND n.is_star = $${idx++}`;
+    params.push(isStarStr === "1");
+  }
+
+  // 排序
+  sql += ` ORDER BY n.is_top DESC, n.updated_at DESC`;
+  // 分页：size=0 代表导出全部，不分页
+  if (size > 0) {
+    sql += ` LIMIT $${idx++} OFFSET $${idx++}`;
+    params.push(size, offset);
+  }
+
+  const { rows } = await pool.query(sql, params); 
+  return jsonResp(rows, CODE.SUCCESS, "查询成功");
+},
+
 };

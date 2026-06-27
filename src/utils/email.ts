@@ -20,6 +20,34 @@ export async function sendActivateEmail(env: Env,to: string, activateUrl: string
   if (error) throw new Error(error.message)
 }
 
+export async function sendChangeEmail(env: Env,to: string, activateUrl: string) {
+
+ const resend = new Resend(env.RESEND_API_KEY);
+  const { error } = await resend.emails.send({
+    from: env.EMAIL_FROM,
+    to: [to],
+    subject: '立即激活新邮箱',
+    html: `
+  <div class="container">
+    <div class="title">请确认绑定您的新邮箱</div>
+    <div class="content">
+      <p>您好：</p>
+      <p>我们收到了您在【智慧笔记】账号下的<strong>更换绑定邮箱</strong>申请，请点击下方按钮完成新邮箱激活，激活后您的账号绑定邮箱将更新为此邮箱。</p>
+      <p>本次激活链接有效期为 <strong>24 小时</strong>，超时需要重新提交邮箱修改申请。</p>
+    </div>
+    <a href="${activateUrl}" class="btn">立即激活新邮箱</a>
+    <div class="tip">
+      <p>如果您本人没有操作本次邮箱更换，请忽略本邮件，您的账号安全不会受到影响。</p>
+      <p>请勿将激活链接转发给他人，避免账号信息泄露。</p>
+      <p>© 2026 智慧笔记</p>
+    </div>
+  </div>
+    `
+  })
+  if (error) throw new Error(error.message)
+}
+
+
 export async function sendResetPasswordEmail(env: Env, to: string, resetUrl: string) {
   const resend = new Resend(env.RESEND_API_KEY);
   const { error } = await resend.emails.send({
