@@ -15,6 +15,9 @@ export type Env = {
   RATE_LIMIT_IP_MAX: string;
   RATE_LIMIT_USER_MAX: string;
   RATE_LIMIT_WINDOW_SEC: string;
+  ZHIPU_API_KEY:string;
+  ZHIPU_BASE_URL:string;
+  ZHIPU_MODEL :string;
    // 后端服务基础地址
   APP_BASE_URL: string;
    // Resend 邮件配置

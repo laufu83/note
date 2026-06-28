@@ -13,7 +13,7 @@
     {
       "binding": "HYPERDRIVE",
       "id": "4f01fef5b951438c9f91c8ee68dcce3e",
-      "localConnectionString": ""
+      "localConnectionString": "postgres://avnadmin:AVNS_h6O_aTt4GU_9TRxtwUx@pg-3934aefc-fred.h.aivencloud.com:15349/defaultdb?sslmode=require"
     }
   ],
   "vars": {
@@ -30,6 +30,9 @@
     "REDIS_URL": "https://master-hound-77781.upstash.io",
     "APP_BASE_URL": "http://n.lau.cc.cd",
     "EMAIL_FROM": "admin@fred.dpdns.org",
+    "ZHIPU_BASE_URL":"https://open.bigmodel.cn/api/paas/v4/chat/completions",
+    "ZHIPU_API_KEY":"",
+    "ZHIPU_MODEL" : "glm-4.7-flash",
     "DATABASE_URL": "",
     "REDIS_TOKEN": "",
     "SUPABASE_SERVICE_KEY": "",

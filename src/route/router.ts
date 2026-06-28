@@ -5,6 +5,9 @@ import { CategoryController } from "../controller/category.controller";
 import { TagController } from "../controller/tag.controller";
 import { FileController } from "../controller/file.controller";
 import { ShareController } from "../controller/share.controller";
+import { AIController } from "../controller/ai.controller";
+import { NoteHistoryController } from "../controller/noteHistory.controller";
+import { NoteEncryptController } from "../controller/noteEncrypt.controller";
 import { authMiddleware } from "./middleware";
 import { rateLimitCheck } from "../utils/rate-limit";
 import { jsonResp } from "../utils/response";
@@ -12,8 +15,11 @@ import { CODE } from "../types/response";
 import { snakeToCamel } from "../utils/naming";
 import type { Env } from "../types/env";
 import type { UserJWTPayload } from "../types/model";
-import { getImageCaptcha, verifyImageCaptcha } from '../controller/captcha.controller'
-import { SystemConfigController} from '../controller/system.controller'
+import {
+  getImageCaptcha,
+  verifyImageCaptcha,
+} from "../controller/captcha.controller";
+import { SystemConfigController } from "../controller/system.controller";
 
 type RouteRule = {
   path: string | RegExp;
@@ -64,13 +70,15 @@ const routeList: RouteRule[] = [
     path: "/api/user/change-pwd",
     method: "POST",
     isPublic: false,
-    handler: async (e, payload, b) => UserController.changePwd(e, payload!.uid, b),
+    handler: async (e, payload, b) =>
+      UserController.changePwd(e, payload!.uid, b),
   },
   {
     path: "/api/user/destroy",
     method: "DELETE",
     isPublic: false,
-    handler: async (e, payload) => UserController.destroyAccount(e, payload!.uid),
+    handler: async (e, payload) =>
+      UserController.destroyAccount(e, payload!.uid),
   },
   {
     path: "/api/user/reset-pwd-send",
@@ -91,46 +99,51 @@ const routeList: RouteRule[] = [
     handler: (e, _, b) => AuthController.resendActivateMail(e, b),
   },
   {
-  path: "/api/user/change-email",
-  method: "GET",
-  isPublic: true,
-  handler: async (e, _, __, s) => AuthController.activateChangeEmail(e, s)
-},
-    {
+    path: "/api/user/change-email",
+    method: "GET",
+    isPublic: true,
+    handler: async (e, _, __, s) => AuthController.activateChangeEmail(e, s),
+  },
+  {
     path: "/api/user/info",
     method: "GET",
     isPublic: false,
-    handler: async (e, payload, _b) => UserController.getCurrentUserInfo(e, payload!.uid)
+    handler: async (e, payload, _b) =>
+      UserController.getCurrentUserInfo(e, payload!.uid),
   },
   {
     path: "/api/user/list",
     method: "GET",
     isPublic: false,
-    handler: async (e, payload, _b) => UserController.getUserList(e, payload!)
+    handler: async (e, payload, _b) => UserController.getUserList(e, payload!),
   },
   {
     path: "/api/user/update",
     method: "POST",
     isPublic: false,
-    handler: async (e, payload, b) => UserController.updateUserInfo(e, payload!, b)
+    handler: async (e, payload, b) =>
+      UserController.updateUserInfo(e, payload!, b),
   },
-    {
+  {
     path: "/api/user/profile",
     method: "POST",
     isPublic: false,
-    handler: async (e, payload, b) => UserController.updateProfile(e, payload!.uid, b)
+    handler: async (e, payload, b) =>
+      UserController.updateProfile(e, payload!.uid, b),
   },
   {
     path: "/api/user/admin-reset-pwd",
     method: "POST",
     isPublic: false,
-    handler: async (e, payload, b) => UserController.adminResetUserPwd(e, payload!, b)
+    handler: async (e, payload, b) =>
+      UserController.adminResetUserPwd(e, payload!, b),
   },
   {
     path: "/api/category",
     method: "POST",
     isPublic: false,
-    handler: async (e, payload, b) => CategoryController.create(e, payload!.uid, b),
+    handler: async (e, payload, b) =>
+      CategoryController.create(e, payload!.uid, b),
   },
   {
     path: "/api/category",
@@ -142,13 +155,15 @@ const routeList: RouteRule[] = [
     path: /^\/api\/category\/(\d+)$/,
     method: "PUT",
     isPublic: false,
-    handler: async (e, payload, b, _, p) => CategoryController.update(e, payload!.uid, p!, b),
+    handler: async (e, payload, b, _, p) =>
+      CategoryController.update(e, payload!.uid, p!, b),
   },
   {
     path: /^\/api\/category\/(\d+)$/,
     method: "DELETE",
     isPublic: false,
-    handler: async (e, payload, _, __, p) => CategoryController.del(e, payload!.uid, p!),
+    handler: async (e, payload, _, __, p) =>
+      CategoryController.del(e, payload!.uid, p!),
   },
   {
     path: "/api/tag",
@@ -166,7 +181,8 @@ const routeList: RouteRule[] = [
     path: /^\/api\/tag\/(\d+)$/,
     method: "DELETE",
     isPublic: false,
-    handler: async (e, payload, _, __, p) => TagController.del(e, payload!.uid, p!),
+    handler: async (e, payload, _, __, p) =>
+      TagController.del(e, payload!.uid, p!),
   },
   {
     path: "/api/note",
@@ -178,31 +194,36 @@ const routeList: RouteRule[] = [
     path: "/api/note",
     method: "GET",
     isPublic: false,
-    handler: async (e, payload, _, s) => NoteController.list(e, payload!.uid, s!),
+    handler: async (e, payload, _, s) =>
+      NoteController.list(e, payload!.uid, s!),
   },
   {
     path: /^\/api\/note\/(\d+)$/,
     method: "GET",
     isPublic: false,
-    handler: async (e, payload, _, __, p) => NoteController.detail(e, payload!.uid, p!),
+    handler: async (e, payload, _, __, p) =>
+      NoteController.detail(e, payload!.uid, p!),
   },
   {
     path: /^\/api\/note\/(\d+)$/,
     method: "PUT",
     isPublic: false,
-    handler: async (e, payload, b, _, p) => NoteController.update(e, payload!.uid, p!, b),
+    handler: async (e, payload, b, _, p) =>
+      NoteController.update(e, payload!.uid, p!, b),
   },
   {
     path: /^\/api\/note\/(\d+)$/,
     method: "DELETE",
     isPublic: false,
-    handler: async (e, payload, _, __, p) => NoteController.moveRecycle(e, payload!.uid, p!),
+    handler: async (e, payload, _, __, p) =>
+      NoteController.moveRecycle(e, payload!.uid, p!),
   },
   {
     path: /^\/api\/note\/(\d+)\/restore$/,
     method: "PUT",
     isPublic: false,
-    handler: async (e, payload, _, __, p) => NoteController.restore(e, payload!.uid, p!),
+    handler: async (e, payload, _, __, p) =>
+      NoteController.restore(e, payload!.uid, p!),
   },
   {
     path: /^\/api\/note\/(\d+)\/destroy$/,
@@ -210,17 +231,19 @@ const routeList: RouteRule[] = [
     isPublic: false,
     handler: async (e, payload, _, __, p) =>
       NoteController.permanentDelete(e, payload!.uid, p!),
-  },{
-  path: "/api/note/trash/clear",
-  method: "DELETE",
-  isPublic: false,
-  handler: async (e, payload) => NoteController.clearTrash(e, payload!.uid)
-},
+  },
+  {
+    path: "/api/note/trash/clear",
+    method: "DELETE",
+    isPublic: false,
+    handler: async (e, payload) => NoteController.clearTrash(e, payload!.uid),
+  },
   {
     path: /^\/api\/note\/(\d+)\/history$/,
     method: "GET",
     isPublic: false,
-    handler: async (e, payload, _, __, p) => NoteController.getHistory(e, payload!.uid, p!),
+    handler: async (e, payload, _, __, p) =>
+      NoteController.getHistory(e, payload!.uid, p!),
   },
   {
     path: "/api/note/rollback",
@@ -236,11 +259,12 @@ const routeList: RouteRule[] = [
     handler: async (e, payload, b, s) =>
       NoteController.exportAllNote(e, payload!.uid, s!),
   },
-  
+
   {
     path: "/api/file/upload",
     method: "POST",
-    handler: async (e, payload, b) => FileController.upload(e, payload!.uid, b.file),
+    handler: async (e, payload, b) =>
+      FileController.upload(e, payload!.uid, b.file),
     isPublic: false,
   },
   {
@@ -253,13 +277,15 @@ const routeList: RouteRule[] = [
     path: "/api/file/delete",
     method: "POST",
     isPublic: false,
-    handler: async (e, payload, b) => FileController.delete(e, payload!.uid, b.path),
+    handler: async (e, payload, b) =>
+      FileController.delete(e, payload!.uid, b.path),
   },
   {
     path: "/api/share/create",
     method: "POST",
     isPublic: false,
-    handler: async (e, payload, b) => ShareController.create(e, payload!.uid, b),
+    handler: async (e, payload, b) =>
+      ShareController.create(e, payload!.uid, b),
   },
   {
     path: "/api/share/list",
@@ -271,9 +297,10 @@ const routeList: RouteRule[] = [
     path: /^\/api\/share\/(\d+)$/,
     method: "DELETE",
     isPublic: false,
-    handler: async (e, payload, _, __, p) => ShareController.deleteShare(e, payload!.uid, p!),
+    handler: async (e, payload, _, __, p) =>
+      ShareController.deleteShare(e, payload!.uid, p!),
   },
-    // ========== 新增滑块验证码公开路由 ==========
+  // ========== 新增滑块验证码公开路由 ==========
   {
     path: "/api/captcha/img",
     method: "GET",
@@ -284,47 +311,180 @@ const routeList: RouteRule[] = [
     path: "/api/captcha/verify",
     method: "POST",
     isPublic: true,
-     handler: async (env, _, body) => {
-    const { key, code } = body
-    return verifyImageCaptcha(env, key, code)
-  }  
-}, // 系统配置路由
-{
+    handler: async (env, _, body) => {
+      const { key, code } = body;
+      return verifyImageCaptcha(env, key, code);
+    },
+  }, // 系统配置路由
+  {
     path: "/api/system/config",
     method: "GET",
     isPublic: true,
-    handler: (env) => SystemConfigController.getPublicConfig(env)
+    handler: (env) => SystemConfigController.getPublicConfig(env),
   },
   {
     path: "/api/system/config/list",
     method: "GET",
     isPublic: false,
-    handler: (env, payload) => SystemConfigController.getConfigList(env, payload)
+    handler: (env, payload) =>
+      SystemConfigController.getConfigList(env, payload),
   },
   {
-  path: "/api/system/config/page",
-  method: "GET",
-  isPublic: false,
-  handler: (env, payload, _, search) => SystemConfigController.getConfigPageList(env, payload, search)
-},
+    path: "/api/system/config/page",
+    method: "GET",
+    isPublic: false,
+    handler: (env, payload, _, search) =>
+      SystemConfigController.getConfigPageList(env, payload, search),
+  },
   {
     path: "/api/system/config/batch",
     method: "PUT",
     isPublic: false,
-    handler: (env, payload, body) => SystemConfigController.batchUpdateSystemConfig(env, payload, body)
+    handler: (env, payload, body) =>
+      SystemConfigController.batchUpdateSystemConfig(env, payload, body),
   },
   {
     path: "/api/system/config/add",
     method: "POST",
     isPublic: false,
-    handler: (env, payload, body) => SystemConfigController.addConfigItem(env, payload, body)
+    handler: (env, payload, body) =>
+      SystemConfigController.addConfigItem(env, payload, body),
   },
+  {
+    path: "/api/system/config/delete",
+    method: "DELETE",
+    isPublic: false,
+    handler: (env, payload, _, search) =>
+      SystemConfigController.deleteConfigItem(env, payload, search),
+  },
+  // AI 接口路由
+  {
+    path: "/api/ai/chat",
+    method: "POST",
+    isPublic: true,
+    handler: async (e, _, b) => AIController.chat(e, b),
+  },
+  {
+    path: "/api/ai/summarize",
+    method: "POST",
+    isPublic: true,
+    handler: async (e, _, b) => AIController.summarize(e, b),
+  },
+  {
+    path: "/api/ai/polish",
+    method: "POST",
+    isPublic: true,
+    handler: async (e, _, b) => AIController.polish(e, b),
+  },
+  {
+    path: "/api/ai/continue",
+    method: "POST",
+    isPublic: true,
+    handler: async (e, _, b) => AIController.continueWrite(e, b),
+  },
+  {
+    path: "/api/ai/translate",
+    method: "POST",
+    isPublic: true,
+    handler: async (e, _, b) => AIController.translate(e, b),
+  },
+
+  // 笔记历史版本（正则捕获id）
+  {
+    path: /^\/api\/note\/(\d+)\/history$/,
+    method: "GET",
+    isPublic: false,
+    handler: async (e, payload, _, __, p) =>
+      NoteHistoryController.getNoteHistory(e, payload!.uid, p!),
+  },
+  {
+    path: "/api/note/history",
+    method: "POST",
+    isPublic: false,
+    handler: async (e, payload, b) =>
+      NoteHistoryController.createHistorySnapshot(e, payload!.uid, b),
+  },
+
+ {
+  // 创建加密笔记
+  path: "/api/note/encrypted",
+  method: "POST",
+  isPublic: false,
+  handler: async (env, payload, body) =>
+    NoteEncryptController.createEncryptedNote(env, payload!.uid, body),
+},
 {
-  path: "/api/system/config/delete",
+  // 获取加密笔记列表
+  path: "/api/note/encrypted/list",
+  method: "GET",
+  isPublic: false,
+  handler: async (env, payload, _, searchParams) =>
+    NoteEncryptController.listEncryptedNotes(env, payload!.uid, searchParams|| new URLSearchParams()),
+},
+{
+  // 获取单个加密笔记（需要密码）
+  path: /^\/api\/note\/encrypted\/(\d+)$/,
+  method: "GET",
+  isPublic: false,
+  handler: async (env, payload, _, searchParams, match) =>
+    NoteEncryptController.getEncryptedNote(
+      env,
+      payload!.uid,
+      match![1], // 捕获的 id
+      searchParams|| new URLSearchParams()  // 👈 路由层兜底
+    ),
+},
+{
+  // 更新加密笔记
+  path: /^\/api\/note\/encrypted\/(\d+)$/,
+  method: "PUT",
+  isPublic: false,
+  handler: async (env, payload, body, _, match) =>
+    NoteEncryptController.updateEncryptedNote(
+      env,
+      payload!.uid,
+      match![1],
+      body
+    ),
+},
+{
+  // 删除加密笔记（软删除）
+  path: /^\/api\/note\/encrypted\/(\d+)$/,
   method: "DELETE",
   isPublic: false,
-  handler: (env, payload, _, search) => SystemConfigController.deleteConfigItem(env, payload, search)
-}
+  handler: async (env, payload, body, _, match) =>
+    NoteEncryptController.deleteEncryptedNote(
+      env,
+      payload!.uid,
+      match![1],
+      body
+    ),
+},
+{
+  // 验证密码
+  path: /^\/api\/note\/encrypted\/(\d+)\/verify$/,
+  method: "POST",
+  isPublic: false,
+  handler: async (env, payload, body, _, match) =>
+    NoteEncryptController.verifyPassword(
+      env,
+      payload!.uid,
+      match![1],
+      body
+    ),
+},
+{
+  // 恢复已删除的加密笔记
+  path: /^\/api\/note\/encrypted\/(\d+)\/restore$/,
+  method: "POST",
+  isPublic: false,
+  handler: async (env, payload, _, __, match) =>
+    NoteEncryptController.restoreEncryptedNote(
+      env,
+      payload!.uid,
+      match![1]
+    ),
+},
 ];
 
 export async function dispatch(req: Request, env: Env): Promise<Response> {
@@ -377,8 +537,8 @@ export async function dispatch(req: Request, env: Env): Promise<Response> {
 
   const { error, payload } = await authMiddleware(req, env);
   if (error) return error;
-  if (!payload)  return jsonResp(null, CODE.UNAUTH, "身份验证失败");
-  
+  if (!payload) return jsonResp(null, CODE.UNAUTH, "身份验证失败");
+
   const userLimit = await rateLimitCheck(req, payload?.uid, env);
   if (userLimit) return userLimit;
 
