@@ -13,7 +13,7 @@
     {
       "binding": "HYPERDRIVE",
       "id": "4f01fef5b951438c9f91c8ee68dcce3e",
-      "localConnectionString": "postgres://avnadmin:AVNS_h6O_aTt4GU_9TRxtwUx@pg-3934aefc-fred.h.aivencloud.com:15349/defaultdb?sslmode=require"
+      "localConnectionString": ""
     }
   ],
   "vars": {
