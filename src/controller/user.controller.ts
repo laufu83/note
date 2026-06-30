@@ -291,20 +291,51 @@ async destroyAccount(
   }
 },
  
-async getUserList(env: Env, payload: UserJWTPayload) {
+async getUserList(env: Env, payload: UserJWTPayload, search: URLSearchParams = new URLSearchParams()) {
   // 管理员校验
   const authErr = requireAdmin(payload);
   if (authErr) return authErr;
 
   const pool = createPgPool(env);
-  // 分页可自行扩展
-  const { rows } = await pool.query(`
+  // 分页参数
+  const page = parseInt(search.get('page') || '1')
+  const pageSize = parseInt(search.get('pageSize') || '10')
+  const current = page > 0 ? page : 1
+  const size = pageSize > 0 && pageSize <= 100 ? pageSize : 10
+  const offset = (current - 1) * size
+
+  // 搜索参数
+  const keyword = search.get('keyword')?.trim()
+  const params: any[] = []
+  let whereSql = 'WHERE deleted = false'
+
+  if (keyword) {
+    whereSql += ` AND (username ILIKE $1 OR email ILIKE $1)`
+    params.push(`%${keyword}%`)
+  }
+
+  // 总条数
+  const totalRes = await pool.query(`
+    SELECT COUNT(*) AS total FROM users ${whereSql}
+  `, params);
+  const total = Number(totalRes.rows[0].total);
+
+  // 分页列表
+  const listSql = `
     SELECT id, username, email, role, status, is_frozen, created_at
     FROM users
-    WHERE deleted = false
+    ${whereSql}
     ORDER BY created_at DESC
-  `);
-  return jsonResp(rows, CODE.SUCCESS, "查询成功");
+    LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+  `
+  const listParams = [...params, size, offset]
+  const { rows } = await pool.query(listSql, listParams);
+ return jsonResp({
+      list: rows,
+      total,
+      page: current,
+      pageSize: size
+    }, CODE.SUCCESS)
 },
 async updateUserInfo(
   env: Env,

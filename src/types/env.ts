@@ -1,7 +1,7 @@
 import type { Hyperdrive } from "@cloudflare/workers-types";
 
 export type Env = {
-  DATABASE_URL: string;
+  PG_DATABASE_URL: string;
   REDIS_URL: string;
   REDIS_TOKEN: string;
   SUPABASE_URL: string;

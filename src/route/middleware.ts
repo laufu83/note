@@ -13,6 +13,6 @@ export async function authMiddleware(req: Request, env: Env) {
     const payload = await verifyAccessToken(token, env);
     return { error: null, payload };
   } catch {
-    return { error: jsonResp(null, CODE.UNAUTH, "登录令牌失效，请重新登录"), payload: null };
+    return { error: jsonResp(null, CODE.UNAUTH, "登录令牌失效，请重新登录",401), payload: null };
   }
 }

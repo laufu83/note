@@ -7,7 +7,6 @@ import { FileController } from "../controller/file.controller";
 import { ShareController } from "../controller/share.controller";
 import { AIController } from "../controller/ai.controller";
 import { NoteHistoryController } from "../controller/noteHistory.controller";
-import { NoteEncryptController } from "../controller/noteEncrypt.controller";
 import { authMiddleware } from "./middleware";
 import { rateLimitCheck } from "../utils/rate-limit";
 import { jsonResp } from "../utils/response";
@@ -114,8 +113,8 @@ const routeList: RouteRule[] = [
   {
     path: "/api/user/list",
     method: "GET",
-    isPublic: false,
-    handler: async (e, payload, _b) => UserController.getUserList(e, payload!),
+    isPublic: false,  
+    handler: async (e, payload, _b, s) => UserController.getUserList(e, payload!, s),
   },
   {
     path: "/api/user/update",
@@ -201,8 +200,8 @@ const routeList: RouteRule[] = [
     path: /^\/api\/note\/(\d+)$/,
     method: "GET",
     isPublic: false,
-    handler: async (e, payload, _, __, p) =>
-      NoteController.detail(e, payload!.uid, p!),
+    handler: async (e, payload, _b, s, p) =>
+      NoteController.detail(e, payload!.uid, p!,s),
   },
   {
     path: /^\/api\/note\/(\d+)$/,
@@ -237,13 +236,6 @@ const routeList: RouteRule[] = [
     method: "DELETE",
     isPublic: false,
     handler: async (e, payload) => NoteController.clearTrash(e, payload!.uid),
-  },
-  {
-    path: /^\/api\/note\/(\d+)\/history$/,
-    method: "GET",
-    isPublic: false,
-    handler: async (e, payload, _, __, p) =>
-      NoteController.getHistory(e, payload!.uid, p!),
   },
   {
     path: "/api/note/rollback",
@@ -398,93 +390,12 @@ const routeList: RouteRule[] = [
       NoteHistoryController.getNoteHistory(e, payload!.uid, p!),
   },
   {
-    path: "/api/note/history",
-    method: "POST",
-    isPublic: false,
-    handler: async (e, payload, b) =>
-      NoteHistoryController.createHistorySnapshot(e, payload!.uid, b),
-  },
-
- {
-  // 创建加密笔记
-  path: "/api/note/encrypted",
-  method: "POST",
-  isPublic: false,
-  handler: async (env, payload, body) =>
-    NoteEncryptController.createEncryptedNote(env, payload!.uid, body),
-},
-{
-  // 获取加密笔记列表
-  path: "/api/note/encrypted/list",
-  method: "GET",
-  isPublic: false,
-  handler: async (env, payload, _, searchParams) =>
-    NoteEncryptController.listEncryptedNotes(env, payload!.uid, searchParams|| new URLSearchParams()),
-},
-{
-  // 获取单个加密笔记（需要密码）
-  path: /^\/api\/note\/encrypted\/(\d+)$/,
-  method: "GET",
-  isPublic: false,
-  handler: async (env, payload, _, searchParams, match) =>
-    NoteEncryptController.getEncryptedNote(
-      env,
-      payload!.uid,
-      match![1], // 捕获的 id
-      searchParams|| new URLSearchParams()  // 👈 路由层兜底
-    ),
-},
-{
-  // 更新加密笔记
-  path: /^\/api\/note\/encrypted\/(\d+)$/,
-  method: "PUT",
-  isPublic: false,
-  handler: async (env, payload, body, _, match) =>
-    NoteEncryptController.updateEncryptedNote(
-      env,
-      payload!.uid,
-      match![1],
-      body
-    ),
-},
-{
-  // 删除加密笔记（软删除）
-  path: /^\/api\/note\/encrypted\/(\d+)$/,
+  path: /^\/api\/note\/history\/(\d+)$/,
   method: "DELETE",
-  isPublic: false,
-  handler: async (env, payload, body, _, match) =>
-    NoteEncryptController.deleteEncryptedNote(
-      env,
-      payload!.uid,
-      match![1],
-      body
-    ),
+  isPublic: false, // 需要登录鉴权
+  handler: async (e, payload, _, __, p) => NoteHistoryController.deleteHistory(e, payload!.uid, p!),
 },
-{
-  // 验证密码
-  path: /^\/api\/note\/encrypted\/(\d+)\/verify$/,
-  method: "POST",
-  isPublic: false,
-  handler: async (env, payload, body, _, match) =>
-    NoteEncryptController.verifyPassword(
-      env,
-      payload!.uid,
-      match![1],
-      body
-    ),
-},
-{
-  // 恢复已删除的加密笔记
-  path: /^\/api\/note\/encrypted\/(\d+)\/restore$/,
-  method: "POST",
-  isPublic: false,
-  handler: async (env, payload, _, __, match) =>
-    NoteEncryptController.restoreEncryptedNote(
-      env,
-      payload!.uid,
-      match![1]
-    ),
-},
+
 ];
 
 export async function dispatch(req: Request, env: Env): Promise<Response> {
@@ -540,7 +451,6 @@ export async function dispatch(req: Request, env: Env): Promise<Response> {
   if (!payload) return jsonResp(null, CODE.UNAUTH, "身份验证失败");
 
   const userLimit = await rateLimitCheck(req, payload?.uid, env);
-  if (userLimit) return userLimit;
-
-  return await matched.handler(env, payload!, body, search, pathParam);
+  if (userLimit) return userLimit;  
+  return await matched.handler(env,payload!,body, search, pathParam);
 }

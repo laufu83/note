@@ -9,7 +9,7 @@ export class NoteHistoryController {
    * GET /api/note/:id/history
    */
   static async getNoteHistory(env: Env, uid: number, noteId: string) {
- 
+   console.log(noteId,uid);
     const pool = createPgPool(env)
 
     const { rows } = await pool.query(`
@@ -42,4 +42,23 @@ export class NoteHistoryController {
 
     return jsonResp(null, CODE.SUCCESS, '已保存历史快照')
   }
+
+  /**
+ * 删除单条笔记历史版本
+ * DELETE /api/note/history/:id
+ */
+static async deleteHistory(env: Env,  uid:number,  id: string ) {
+  console.log(id,uid);
+  // 校验：只能删除当前用户所属的历史记录
+  const pool = createPgPool(env)
+  const result = await pool.query(
+    `DELETE FROM note_history WHERE id = $1 AND user_id = $2`,
+    [id, uid]
+  );
+  if (!result) {
+    return jsonResp(null, CODE.NOT_FOUND, '该历史记录不存在或无权限删除');
+  }
+
+  return jsonResp(null, CODE.SUCCESS, '删除成功');
+}
 }

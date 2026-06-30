@@ -51,7 +51,7 @@ export const ShareController = {
       );
 
       // 拼接公开分享地址，可配置在环境变量
-      let shareUrl = `${env.APP_BASE_URL || "http://127.0.0.1:8787"}/api/share/${code}`;
+      let shareUrl = `${env.APP_BASE_URL || "http://127.0.0.1:8787"}/share/${code}`;
       // 如果设置了访问密码，自动拼接 pwd 参数
       if (body.password?.trim()) {
         shareUrl += `?pwd=${encodeURIComponent(body.password.trim())}`;

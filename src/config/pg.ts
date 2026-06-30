@@ -1,4 +1,3 @@
-//import { Pool } from "@neondatabase/serverless";
 import { Pool } from "pg";
 import type { Env } from "../types/env";
 
