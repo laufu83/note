@@ -263,7 +263,7 @@ const routeList: RouteRule[] = [
     path: "/api/file",
     method: "GET",
     isPublic: false,
-    handler: async (e, payload) => FileController.list(e, payload!.uid),
+    handler: async (e, payload,_b,s) => FileController.list(e, payload!.uid, s!),
   },
   {
     path: "/api/file/delete",

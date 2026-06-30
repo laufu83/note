@@ -33,11 +33,38 @@ export const FileController = {
     return jsonResp({ ...rows[0], url: data.publicUrl });
   },
 
-  async list(env: Env, uid: number) {
-    const pool = createPgPool(env);
-    const { rows } = await pool.query(`SELECT * FROM user_file WHERE user_id=$1 ORDER BY created_at DESC`, [uid]);
-    return jsonResp(rows);
-  },
+// 后端修改
+async list(env: Env, uid: number, search: URLSearchParams) {
+  const pool = createPgPool(env);
+// 分页参数
+  const page = parseInt(search.get('page') || '1')
+  const pageSize = parseInt(search.get('pageSize') || '10')
+  const current = page > 0 ? page : 1
+  const size = pageSize > 0 && pageSize <= 100 ? pageSize : 10
+  const offset = (current - 1) * size
+
+  // 搜索参数
+ // const keyword = search.get('keyword')?.trim()
+  // 获取总数
+  const countResult = await pool.query(
+    `SELECT COUNT(*) as total FROM user_file WHERE user_id=$1`,
+    [uid]
+  );
+  const total = parseInt(countResult.rows[0].total);
+  
+  // 获取分页数据
+  const { rows } = await pool.query(
+    `SELECT * FROM user_file WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
+    [uid, size, offset]
+  );
+  
+  return jsonResp({
+    list: rows,
+    total: total,
+    page: page,
+    pageSize: pageSize
+  });
+},
 
   async delete(env: Env, uid: number, path: string) {
     const supabase = createSupabase(env);
