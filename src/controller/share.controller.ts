@@ -1,12 +1,12 @@
-import { createPgPool } from "../config/pg";
-import { getNowISO } from "../utils/time";
+import { createKnex } from "../config/knex";
 import { jsonResp } from "../utils/response";
 import { CODE } from "../types/response";
 import { v4 as uuidv4 } from "uuid";
 import type { Env } from "../types/env";
+import type { Knex } from "knex";
 
 export const ShareController = {
-  async create(
+async create(
     env: Env,
     uid: number,
     body: {
@@ -16,111 +16,113 @@ export const ShareController = {
       expireDays?: number;
     }
   ) {
-    const pool = createPgPool(env);
-    // 校验笔记归属
-    const check = await pool.query(
-      `SELECT id FROM notes WHERE id=$1 AND user_id=$2 AND is_delete=false`,
-      [body.noteId, uid]
-    );
-    if (check.rows.length === 0)
+    const knex = createKnex(env);
+    // 校验笔记归属 + 软删除过滤 is_deleted = 0
+    const check = await knex("notes")
+      .where({ id: body.noteId, user_id: uid, is_deleted: 0 })
+      .first("id");
+
+    if (!check)
       return jsonResp(null, CODE.FORBIDDEN, "无权分享该笔记");
 
     const code = uuidv4().replace(/-/g, "").slice(0, 16);
-    const now = new Date();
-    let expireAt: string | null = null;
+    let activateExpire: Knex.Raw | null = null;
 
     // 根据天数计算过期时间：0 = 永久有效
     if (body.expireDays && body.expireDays > 0) {
-      const expireTime = new Date(now.getTime() + body.expireDays * 24 * 60 * 60 * 1000);
-      expireAt = expireTime.toISOString();
+      // 修复：使用 MAKE_INTERVAL 安全参数化方式
+      activateExpire = knex.raw(`CURRENT_TIMESTAMP(6) + MAKE_INTERVAL(days := ?)`, [body.expireDays]);
     }
 
     try {
-      await pool.query(
-        `INSERT INTO note_share
-          (note_id, share_code, access_password, permission, expire_at, created_at)
-         VALUES($1,$2,$3,$4,$5,$6)`,
-        [
-          body.noteId,
-          code,
-          body.password ?? null,
-          body.permission,
-          expireAt,
-          now.toISOString(),
-        ]
-      );
+      await knex("note_share").insert({
+        note_id: body.noteId,
+        share_code: code,
+        access_password: body.password ?? null,
+        permission: body.permission,
+        activate_expire: activateExpire,
+        is_deleted: 0
+      });
 
-      // 拼接公开分享地址，可配置在环境变量
-      let shareUrl = `${env.APP_BASE_URL || "http://127.0.0.1:8787"}/share/${code}`;
-      // 如果设置了访问密码，自动拼接 pwd 参数
+      let shareUrl = `${env.APP_BASE_URL || "http://localhost:8787"}/share/${code}`;
       if (body.password?.trim()) {
         shareUrl += `?pwd=${encodeURIComponent(body.password.trim())}`;
-       }
+      }
+
       return jsonResp({
         shareCode: code,
         shareUrl: shareUrl,
       });
-    } catch {
+    } catch (err) {
+      const error = err as Error;
+      console.error("【创建笔记分享失败】", { uid, noteId: body.noteId, msg: error.message });
       return jsonResp(null, CODE.FAIL, "创建分享失败");
     }
   },
 
   async getPublicShare(env: Env, code: string, pwd?: string | null) {
-  const pool = createPgPool(env);
-  const now = new Date().toISOString();
-  const { rows } = await pool.query(
-    `SELECT n.title, n.content, n.updated_at, s.access_password, s.expire_at
-     FROM note_share s
-     JOIN notes n ON s.note_id = n.id
-     WHERE s.share_code = $1`,
-    [code]
-  );
+    const knex = createKnex(env);
+    const rows = await knex("note_share as s")
+      .join("notes as n", "s.note_id", "n.id")
+      .where({
+        "s.share_code": code,
+        "s.is_deleted": 0,
+        "n.is_deleted": 0
+      })
+      // 过期时间为空（永久有效） 或者 过期时间 > 当前数据库时间
+      .where(function (qb) {
+        qb.whereNull("s.activate_expire")
+          .orWhere("s.activate_expire", ">", knex.fn.now(6));
+      })
+      .select("n.title", "n.content", "n.updated_at", "s.access_password", "s.activate_expire");
 
-  if (rows.length === 0)
-    return jsonResp(null, CODE.NOT_FOUND, "分享不存在或已失效");
+    if (rows.length === 0)
+      return jsonResp(null, CODE.NOT_FOUND, "分享不存在或已失效");
 
-  const item = rows[0];
-  // 判断是否过期
-  if (item.expire_at && new Date(item.expire_at) < new Date(now)) {
-    return jsonResp(null, CODE.FAIL, "该分享已过期");
-  }
-
-  // 密码校验
-  if (item.access_password) {
-    if (!pwd || pwd !== item.access_password) {
-      return jsonResp(null, CODE.UNAUTH, "需要访问密码");
+    const item = rows[0];
+    // 密码校验
+    if (item.access_password) {
+      if (!pwd || pwd !== item.access_password) {
+        return jsonResp(null, CODE.UNAUTH, "需要访问密码");
+      }
     }
-  }
 
-  return jsonResp({
-    title: item.title,
-    content: item.content,
-    updated_at: item.updated_at
-  });
-},
+    return jsonResp({
+      title: item.title,
+      content: item.content,
+      updated_at: item.updated_at
+    });
+  },
 
   async myShareList(env: Env, uid: number) {
-    const pool = createPgPool(env);
-    const { rows } = await pool.query(
-      `SELECT s.*, n.title, n.is_delete
-       FROM note_share s
-       JOIN notes n ON s.note_id = n.id
-       WHERE n.user_id = $1
-       ORDER BY s.created_at DESC`,
-      [uid]
-    );
+    const knex = createKnex(env);
+    const rows = await knex("note_share as s")
+      .join("notes as n", "s.note_id", "n.id")
+      .where({
+        "n.user_id": uid,
+        "s.is_deleted": 0
+      })
+      .orderBy("s.created_at", "desc")
+      .select("s.*", "n.title");
+
     return jsonResp(rows);
   },
 
   async deleteShare(env: Env, uid: number, sid: string) {
-    const pool = createPgPool(env);
-    const res = await pool.query(
-      `DELETE FROM note_share
-       WHERE id = $1
-       AND note_id IN (SELECT id FROM notes WHERE user_id = $2)`,
-      [sid, uid]
-    );
-    if (res.rowCount === 0)
+    const knex = createKnex(env);
+
+    // 改为逻辑删除，不再物理删除
+    const rowCount = await knex("note_share")
+      .whereIn("note_id", builder => {
+        builder.select("id").from("notes").where({ user_id: uid, is_deleted: 0 });
+      })
+      .where({ id: sid, is_deleted: 0 })
+      .update({
+        is_deleted: 1,
+        updated_at: knex.fn.now()
+      });
+
+    if (rowCount === 0)
       return jsonResp(null, CODE.NOT_FOUND, "分享记录不存在");
 
     return jsonResp(null, CODE.SUCCESS, "分享已销毁");

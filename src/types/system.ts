@@ -4,19 +4,19 @@ export type ConfigType = 'bool' | 'int' | 'string' | 'json'
 // 数据库配置全字段
 export interface SysConfig {
   id: number
-  configKey: string
-  configValue: string
-  configDesc: string
-  configType: ConfigType
-  createdAt: string
-  updatedAt: string
+  config_key: string
+  config_value: string
+  config_desc: string
+  config_type: ConfigType
+  created_at: string
+  updated_at: string
 }
 
 // Redis缓存存储精简结构
 export type ConfigCacheItem = {
-  configKey: string
-  configValue: string
-  configType: ConfigType
+  config_key: string
+  config_value: string
+  config_type: ConfigType
 }
 
 // Redis全局缓存Key

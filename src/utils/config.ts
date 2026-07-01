@@ -1,17 +1,17 @@
-import { Pool } from '@neondatabase/serverless'
 import { Redis } from '@upstash/redis'
+import { Knex } from 'knex'
 import { snakeToCamel } from './naming'
 import { REDIS_GLOBAL_CONFIG_KEY, ConfigCacheItem, ConfigType, SysConfig } from '../types/system'
 
 /**
  * 全量加载数据库配置写入 Redis
  */
-export async function loadAllConfigToCache(pool: Pool, redis: Redis): Promise<ConfigCacheItem[]> {
-  const { rows } = await pool.query(`SELECT config_key, config_value, config_type FROM sys_config`)
+export async function loadAllConfigToCache(knex: Knex, redis: Redis): Promise<ConfigCacheItem[]> {
+  const rows = await knex('sys_config').select('config_key', 'config_value', 'config_type')
   const cacheList: ConfigCacheItem[] = rows.map(row => ({
-    configKey: row.config_key,
-    configValue: row.config_value,
-    configType: row.config_type
+    config_key: row.config_key,
+    config_value: row.config_value,
+    config_type: row.config_type
   }))
   await redis.set(REDIS_GLOBAL_CONFIG_KEY, JSON.stringify(cacheList))
   return cacheList
@@ -20,16 +20,16 @@ export async function loadAllConfigToCache(pool: Pool, redis: Redis): Promise<Co
 /**
  * 获取配置 Map（优先 Redis 缓存，未命中查库）
  */
-export async function getConfigMap(pool: Pool, redis: Redis): Promise<Map<string, { value: string; type: ConfigType }>> {
+export async function getConfigMap(knex: Knex, redis: Redis): Promise<Map<string, { value: string; type: ConfigType }>> {
   const cacheStr = await redis.get<string>(REDIS_GLOBAL_CONFIG_KEY)
   let list: ConfigCacheItem[]
   if (!cacheStr) {
-    list = await loadAllConfigToCache(pool, redis)
+    list = await loadAllConfigToCache(knex, redis)
   } else {
     list = JSON.parse(cacheStr)
   }
   const map = new Map<string, { value: string; type: ConfigType }>()
-  list.forEach(item => map.set(item.configKey, { value: item.configValue, type: item.configType }))
+  list.forEach(item => map.set(item.config_key, { value: item.config_value, type: item.config_type }))
   return map
 }
 
@@ -37,12 +37,12 @@ export async function getConfigMap(pool: Pool, redis: Redis): Promise<Map<string
  * 通用根据 Key 获取配置，自动类型转换 + 默认值兜底
  */
 export async function getConfigValue<T>(
-  pool: Pool,
+  knex: Knex,
   redis: Redis,
   configKey: string,
   defaultValue: T
 ): Promise<T> {
-  const map = await getConfigMap(pool, redis)
+  const map = await getConfigMap(knex, redis)
   const item = map.get(configKey)
   if (!item) return defaultValue
   switch (item.type) {
@@ -56,11 +56,12 @@ export async function getConfigValue<T>(
       return item.value as unknown as T
   }
 }
+
 /**
  * 新增配置字典项
  */
 export async function addSysConfig(
-  pool: Pool,
+  knex: Knex,
   redis: Redis,
   data: {
     configKey: string
@@ -69,12 +70,15 @@ export async function addSysConfig(
     configType: ConfigType
   }
 ) {
-  const now = new Date().toISOString()
-  await pool.query(
-    `INSERT INTO sys_config(config_key, config_value, config_desc, config_type, created_at, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6)`,
-    [data.configKey, data.configValue, data.configDesc, data.configType, now, now]
-  )
+  const now = knex.fn.now(6)
+  await knex('sys_config').insert({
+    config_key: data.configKey,
+    config_value: data.configValue,
+    config_desc: data.configDesc,
+    config_type: data.configType,
+    created_at: now,
+    updated_at: now
+  })
   // 新增后清空缓存
   await redis.del(REDIS_GLOBAL_CONFIG_KEY)
 }
@@ -82,66 +86,63 @@ export async function addSysConfig(
 /**
  * 根据key删除配置项
  */
-export async function deleteSysConfig(pool: Pool, redis: Redis, configKey: string) {
-  await pool.query(`DELETE FROM sys_config WHERE config_key = $1`, [configKey])
+export async function deleteSysConfig(knex: Knex, redis: Redis, configKey: string) {
+  await knex('sys_config').where('config_key', configKey).del()
   await redis.del(REDIS_GLOBAL_CONFIG_KEY)
 }
+
 /**
  * 查询完整配置字典列表（后台管理）
  */
-export async function getSysConfigList(pool: Pool): Promise<SysConfig[]> {
-  const { rows } = await pool.query(`SELECT * FROM sys_config ORDER BY id ASC`)
+export async function getSysConfigList(knex: Knex): Promise<SysConfig[]> {
+  const rows = await knex('sys_config').orderBy('id', 'asc')
   return rows.map(row => snakeToCamel(row))
 }
 
 /**
- * 批量更新配置：PG事务更新 + 删除Redis缓存实现数据同步
+ * 批量更新配置：Knex事务 + 删除Redis缓存实现数据同步
  */
 export async function batchUpdateConfig(
-  pool: Pool,
+  knex: Knex,
   redis: Redis,
   updateList: Array<{ configKey: string; configValue: string; configType: ConfigType }>
 ) {
-  const now = new Date().toISOString()
-  await pool.query('BEGIN')
-  try {
+  const now = knex.fn.now(6)
+  await knex.transaction(async trx => {
     for (const item of updateList) {
-      await pool.query(
-        `UPDATE sys_config SET config_value=$1,config_type=$2,updated_at=$3 WHERE config_key=$4`,
-        [item.configValue, item.configType, now, item.configKey]
-      )
+      await trx('sys_config')
+        .where('config_key', item.configKey)
+        .update({
+          config_value: item.configValue,
+          config_type: item.configType,
+          updated_at: now
+        })
     }
-    await pool.query('COMMIT')
-    await redis.del(REDIS_GLOBAL_CONFIG_KEY)
-  } catch (err) {
-    await pool.query('ROLLBACK')
-    throw err
-  }
+  })
+  await redis.del(REDIS_GLOBAL_CONFIG_KEY)
 }
 
 /**
  * 分页获取配置字典
  */
 export async function getSysConfigPageList(
-  pool: Pool,
+  knex: Knex,
   page: number,
   pageSize: number
 ) {
   const offset = (page - 1) * pageSize
   // 分页数据
-  const { rows } = await pool.query(`
-    SELECT * FROM sys_config
-    ORDER BY id ASC
-    LIMIT $1 OFFSET $2
-  `, [pageSize, offset])
+  const rows = await knex('sys_config')
+    .orderBy('id', 'asc')
+    .limit(pageSize)
+    .offset(offset)
 
   // 总条数
-  const totalRes = await pool.query(`SELECT COUNT(*) AS total FROM sys_config`)
-  const total = Number(totalRes.rows[0].total)
+  const total = await knex('sys_config').count('* as total').first()
 
   return {
     list: rows.map(row => snakeToCamel(row)),
-    total,
+    total: Number(total?.total ?? 0),
     page,
     pageSize
   }

@@ -1,7 +1,7 @@
 import { handleOptionsCors } from "./utils/cors";
 import { dispatch } from "./route/router";
-import { createPgPool } from "./config/pg";
-import { getNowISO } from "./utils/time";
+import { createKnex } from "./config/knex";
+
 import type { Env } from "./types/env";
 // 从 Cloudflare Workers 导入类型
 import type { ScheduledEvent } from "@cloudflare/workers-types";
@@ -11,11 +11,17 @@ export default {
     if (req.method === "OPTIONS") return handleOptionsCors();
     return dispatch(req, env);
   },
-
   async scheduled(_evt: ScheduledEvent, env: Env) {
-    const pool = createPgPool(env);
-    const now = getNowISO();
-    await pool.query(`DELETE FROM notes WHERE is_delete=true AND delete_expire < $1`, [now]);
-    await pool.query(`DELETE FROM user_refresh_token WHERE expired_at < $1`, [now]);
+    const knex = createKnex(env);
+    // 回收站笔记自动清理：删除已逻辑删除且过期时间早于当前数据库时间的数据
+    await knex("notes")
+      .where("is_deleted", true)
+      .where("delete_expired_at", "<", knex.fn.now(6))
+      .del();
+
+    // 过期刷新令牌清理
+    await knex("user_refresh_token")
+      .where("expired_at", "<", knex.fn.now(6))
+      .del();
   },
 };

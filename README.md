@@ -95,7 +95,7 @@ CREATE TABLE users (
     password_hash VARCHAR(255) NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
-    deleted BOOLEAN DEFAULT FALSE
+    is_deleted BOOLEAN DEFAULT FALSE
 );
 
 -- 刷新令牌表
@@ -136,8 +136,8 @@ CREATE TABLE notes (
     is_draft BOOLEAN DEFAULT FALSE,
     is_top BOOLEAN DEFAULT FALSE,
     is_star BOOLEAN DEFAULT FALSE,
-    is_delete BOOLEAN DEFAULT FALSE,
-    delete_expire TIMESTAMPTZ,
+    is_deleted BOOLEAN DEFAULT FALSE,
+    delete_expired_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     note_tsv TSVECTOR GENERATED ALWAYS AS (to_tsvector('simple', title)) STORED

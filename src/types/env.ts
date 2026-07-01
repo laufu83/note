@@ -1,7 +1,10 @@
 import type { Hyperdrive } from "@cloudflare/workers-types";
 
 export type Env = {
-  PG_DATABASE_URL: string;
+  ENVIRONMENT:string;
+  DB_CLIENT:string;
+  DATABASE_URL: string;
+  DB_SSL: string;
   REDIS_URL: string;
   REDIS_TOKEN: string;
   SUPABASE_URL: string;
@@ -24,5 +27,6 @@ export type Env = {
   RESEND_API_KEY: string;
   EMAIL_FROM: string;
    // Hyperdrive 绑定
-  HYPERDRIVE: Hyperdrive;
+  HYPER_PG: Hyperdrive;
+  HYPER_MYSQL: Hyperdrive;
 };

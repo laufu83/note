@@ -1,4 +1,4 @@
-import { createPgPool } from '../config/pg'
+import { createKnex } from '../config/knex'
 import { createRedis } from '../config/redis'
 import { REDIS_GLOBAL_CONFIG_KEY, ConfigCacheItem, ConfigType } from '../types/system'
 import { jsonResp } from "../utils/response";
@@ -24,22 +24,27 @@ export class SystemConfigController {
    * 【公开接口】前端获取解析后的配置键值
    */
   static async getPublicConfig(env: Env) {
-    const pool = createPgPool(env)
+    const knex = createKnex(env)
     const redis = createRedis(env)
 
     const cacheStr = await redis.get<string>(REDIS_GLOBAL_CONFIG_KEY)
     let list: ConfigCacheItem[]
 
     if (!cacheStr) {
-      const { rows } = await pool.query(`SELECT config_key, config_value, config_type FROM sys_config`)
-      list = rows
+      // 只查询未删除配置
+      list = await knex('sys_config')
+        .where({ is_deleted: 0 })
+        .select('config_key', 'config_value', 'config_type')
       await redis.set(REDIS_GLOBAL_CONFIG_KEY, JSON.stringify(list))
     } else {
       list = JSON.parse(cacheStr)
     }
 
     const configMap = new Map<string, { value: string; type: ConfigType }>()
-    list.forEach(item => configMap.set(item.configKey, { value: item.configValue, type: item.configType }))
+    list.forEach(item => configMap.set(item.config_key, {
+      value: item.config_value,
+      type: item.config_type
+    }))
 
     const result: Record<string, string | number | boolean | unknown> = {}
     for (const [key, item] of configMap) {
@@ -68,21 +73,22 @@ export class SystemConfigController {
     configKey: string,
     defaultValue: T
   ): Promise<T> {
-    const pool = createPgPool(env)
+    const knex = createKnex(env)
     const redis = createRedis(env)
 
     const cacheStr = await redis.get<string>(REDIS_GLOBAL_CONFIG_KEY)
     let list: ConfigCacheItem[]
     if (!cacheStr) {
-      const { rows } = await pool.query(`SELECT config_key, config_value, config_type FROM sys_config`)
-      list = rows
+      list = await knex('sys_config')
+        .where({ is_deleted: 0 })
+        .select('config_key', 'config_value', 'config_type')
       await redis.set(REDIS_GLOBAL_CONFIG_KEY, JSON.stringify(list))
     } else {
       list = JSON.parse(cacheStr)
     }
 
     const configMap = new Map<string, { value: string; type: ConfigType }>()
-    list.forEach(item => configMap.set(item.configKey, { value: item.configValue, type: item.configType }))
+    list.forEach(item => configMap.set(item.config_key, { value: item.config_value, type: item.config_type }))
 
     const item = configMap.get(configKey)
     if (!item) return defaultValue
@@ -105,9 +111,12 @@ export class SystemConfigController {
     const permissionCheck = this.checkAdminPermission(payload)
     if (permissionCheck !== true) return permissionCheck
 
-    const pool = createPgPool(env)
-    const { rows } = await pool.query(`SELECT * FROM sys_config ORDER BY id ASC`)
-    return jsonResp(rows, CODE.SUCCESS)
+    const knex = createKnex(env)
+    // 只查询未删除配置
+    const list = await knex('sys_config')
+      .where({ is_deleted: 0 })
+      .orderBy('id', 'asc')
+    return jsonResp(list, CODE.SUCCESS)
   }
 
   /**
@@ -127,17 +136,21 @@ export class SystemConfigController {
     const size = pageSize > 0 && pageSize <= 100 ? pageSize : 10
     const offset = (current - 1) * size
 
-    const pool = createPgPool(env)
-    const { rows } = await pool.query(`
-      SELECT * FROM sys_config
-      ORDER BY id ASC
-      LIMIT $1 OFFSET $2
-    `, [size, offset])
+    const knex = createKnex(env)
+    const totalRow = await knex('sys_config')
+      .where({ is_deleted: 0 })
+      .count('* as total')
+      .first()
+    const total = Number(totalRow?.total ?? 0)
 
-    const totalRes = await pool.query(`SELECT COUNT(*) AS total FROM sys_config`)
-    const total = Number(totalRes.rows[0].total)
+    const list = await knex('sys_config')
+      .where({ is_deleted: 0 })
+      .orderBy('id', 'asc')
+      .limit(size)
+      .offset(offset)
+
     return jsonResp({
-      list: rows,
+      list,
       total,
       page: current,
       pageSize: size
@@ -164,14 +177,18 @@ export class SystemConfigController {
       return jsonResp(null, CODE.PARAM_ERR, '配置键不能为空')
     }
 
-    const pool = createPgPool(env)
+    const knex = createKnex(env)
     const redis = createRedis(env)
-    const now = new Date().toISOString()
-    await pool.query(
-      `INSERT INTO sys_config(config_key, config_value, config_desc, config_type, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6)`,
-      [body.config_key, body.config_value, body.config_desc, body.config_type, now, now]
-    )
+
+    // 新增不再手动传入 created_at、updated_at，数据库默认填充，带上软删除默认值
+    await knex('sys_config').insert({
+      config_key: body.config_key,
+      config_value: body.config_value,
+      config_desc: body.config_desc,
+      config_type: body.config_type,
+      is_deleted: 0
+    })
+    // 清空缓存
     await redis.del(REDIS_GLOBAL_CONFIG_KEY)
     return jsonResp(null, CODE.SUCCESS, '新增配置成功')
   }
@@ -187,30 +204,28 @@ export class SystemConfigController {
     const permissionCheck = this.checkAdminPermission(payload)
     if (permissionCheck !== true) return permissionCheck
 
-    const pool = createPgPool(env)
+    const knex = createKnex(env)
     const redis = createRedis(env)
-    const now = new Date().toISOString()
+ 
 
-    await pool.query('BEGIN')
-    try {
+    await knex.transaction(async (trx) => {
       for (const item of updateList) {
-        await pool.query(
-          `UPDATE sys_config SET config_value=$1,config_type=$2,updated_at=$3 WHERE config_key=$4`,
-          [item.config_value, item.config_type, now, item.config_key]
-        )
+        await trx('sys_config')
+          .where({ config_key: item.config_key, is_deleted: 0 })
+          .update({
+            config_value: item.config_value,
+            config_type: item.config_type,
+            updated_at: knex.fn.now()
+          })
       }
-      await pool.query('COMMIT')
-      await redis.del(REDIS_GLOBAL_CONFIG_KEY)
-    } catch (err) {
-      await pool.query('ROLLBACK')
-      throw err
-    }
+    })
 
+    await redis.del(REDIS_GLOBAL_CONFIG_KEY)
     return jsonResp(null, CODE.SUCCESS, '配置更新成功，缓存已刷新')
   }
 
   /**
-   * 管理员：删除配置项
+   * 管理员：删除配置项（逻辑删除）
    */
   static async deleteConfigItem(
     env: Env,
@@ -225,9 +240,17 @@ export class SystemConfigController {
       return jsonResp(null, CODE.PARAM_ERR, '配置键不能为空')
     }
 
-    const pool = createPgPool(env)
+    const knex = createKnex(env)
     const redis = createRedis(env)
-    await pool.query(`DELETE FROM sys_config WHERE config_key = $1`, [config_key])
+
+
+    // 逻辑删除，不再物理删除
+    await knex('sys_config')
+      .where({ config_key, is_deleted: 0 })
+      .update({
+        is_deleted: 1,
+        updated_at: knex.fn.now()
+      })
     await redis.del(REDIS_GLOBAL_CONFIG_KEY)
 
     return jsonResp(null, CODE.SUCCESS, '删除成功')

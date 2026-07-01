@@ -25,7 +25,7 @@ export type NoteRow = {
   is_top: boolean;
   is_star: boolean;
   is_delete: boolean;
-  delete_expire: string | null;
+  delete_expired_at: string | null;
   created_at: string;
   updated_at: string;
 };

@@ -7,14 +7,30 @@
     "enabled": true
   },
   "compatibility_flags": ["nodejs_compat"],
+ // 所有数据库驱动外部化，不会被打包进 bundle，运行时动态加载
+  "alias": {
+    "mariadb": "./empty-module.js",
+    "mariadb/callback": "./empty-module.js",
+    "sqlite3": "./empty-module.js",
+    "better-sqlite3": "./empty-module.js",
+    "mssql": "./empty-module.js",
+    "oracledb": "./empty-module.js"
+  },
   "hyperdrive": [
     {
-      "binding": "HYPERDRIVE",
+      "binding": "HYPER_PG",
       "id": "4f01fef5b951438c9f91c8ee68dcce3e",
+      "localConnectionString": ""
+    },
+    {
+      "binding": "HYPER_MYSQL",
+      "id": "b07b57520fde4472a3cf242890f9d28d",
       "localConnectionString": ""
     }
   ],
   "vars": {
+    "DB_CLIENT": "pg",
+    "DB_SSL": "true",
     "ACCESS_TOKEN_EXPIRE": "1h",
     "REFRESH_TOKEN_EXPIRE": "30d",
     "BCRYPT_SALT_ROUND": "10",

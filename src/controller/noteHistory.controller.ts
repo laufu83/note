@@ -1,7 +1,8 @@
 import type { Env } from '../types/env'
-import { createPgPool } from '../config/pg'
+import { createKnex } from '../config/knex'
 import { jsonResp } from "../utils/response";
 import { CODE } from "../types/response";
+
 export class NoteHistoryController {
 
   /**
@@ -9,15 +10,13 @@ export class NoteHistoryController {
    * GET /api/note/:id/history
    */
   static async getNoteHistory(env: Env, uid: number, noteId: string) {
-   console.log(noteId,uid);
-    const pool = createPgPool(env)
+    console.log(noteId, uid);
+    const knex = createKnex(env)
 
-    const { rows } = await pool.query(`
-      SELECT id, note_id, title, content, created_at
-      FROM note_history
-      WHERE note_id = $1 AND user_id = $2
-      ORDER BY created_at DESC
-    `, [noteId, uid])
+    const rows = await knex('note_history')
+      .where({ note_id: noteId, user_id: uid })
+      .orderBy('created_at', 'desc')
+      .select('id', 'note_id', 'title', 'content', 'created_at')
 
     return jsonResp(rows, CODE.SUCCESS)
   }
@@ -31,34 +30,34 @@ export class NoteHistoryController {
     uid: number,
     body: { note_id: number; title: string; content: string }
   ) {
-   
-    const pool = createPgPool(env)
-    const now = new Date().toISOString()
+    const knex = createKnex(env)
 
-    await pool.query(`
-      INSERT INTO note_history (user_id, note_id, title, content, created_at)
-      VALUES ($1,$2,$3,$4,$5)
-    `, [uid, body.note_id, body.title, body.content, now])
+    await knex('note_history').insert({
+      user_id: uid,
+      note_id: body.note_id,
+      title: body.title,
+      content: body.content
+    })
 
     return jsonResp(null, CODE.SUCCESS, '已保存历史快照')
   }
 
   /**
- * 删除单条笔记历史版本
- * DELETE /api/note/history/:id
- */
-static async deleteHistory(env: Env,  uid:number,  id: string ) {
-  console.log(id,uid);
-  // 校验：只能删除当前用户所属的历史记录
-  const pool = createPgPool(env)
-  const result = await pool.query(
-    `DELETE FROM note_history WHERE id = $1 AND user_id = $2`,
-    [id, uid]
-  );
-  if (!result) {
-    return jsonResp(null, CODE.NOT_FOUND, '该历史记录不存在或无权限删除');
-  }
+   * 删除单条笔记历史版本
+   * DELETE /api/note/history/:id
+   */
+  static async deleteHistory(env: Env, uid: number, id: string) {
+    console.log(id, uid);
+    const knex = createKnex(env)
 
-  return jsonResp(null, CODE.SUCCESS, '删除成功');
-}
+    const affectedRows = await knex('note_history')
+      .where({ id, user_id: uid })
+      .delete()
+
+    if (affectedRows === 0) {
+      return jsonResp(null, CODE.NOT_FOUND, '该历史记录不存在或无权限删除');
+    }
+
+    return jsonResp(null, CODE.SUCCESS, '删除成功');
+  }
 }

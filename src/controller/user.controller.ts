@@ -1,388 +1,367 @@
-import { createPgPool } from "../config/pg";
+import { createKnex } from "../config/knex";
 import { createRedis } from "../config/redis";
-import { getNowISO } from "../utils/time";
 import { hashPassword, comparePassword } from "../utils/password";
 import { jsonResp } from "../utils/response";
 import { CODE } from "../types/response";
-import {requireAdmin} from "../middleware/auth"
+import { requireAdmin } from "../middleware/auth"
 import type { Env } from "../types/env";
-import type{UserJWTPayload } from "../types/model"
+import type { UserJWTPayload } from "../types/model"
 import { v4 as uuidv4 } from "uuid";
 import { sendChangeEmail } from "../utils/email";
+
 // Token黑名单过期时间：1天
 const TOKEN_BLACK_EXPIRE = 86400;
-export const UserController = { 
-   /**
+
+export const UserController = {
+  /**
    * 获取当前登录用户详细信息
    */
   async getCurrentUserInfo(env: Env, uid: number) {
-    const pool = createPgPool(env);
-    
-    const { rows } = await pool.query(
-      `
-      SELECT 
-        id, 
-        username, 
-        email, 
-        avatar,
-        role, 
-        status, 
-        is_frozen, 
-        created_at, 
-        updated_at
-      FROM users 
-      WHERE id = $1 AND deleted = false
-      `,
-      [uid]
-    );
-    
-    if (rows.length === 0) {
+    const knex = createKnex(env);
+
+    const user = await knex('users')
+      .select(
+        'id',
+        'username',
+        'email',
+        'avatar',
+        'role',
+        'status',
+        'is_frozen',
+        'created_at',
+        'updated_at'
+      )
+      .where({ id: uid, is_deleted: 0 })
+      .first();
+
+    if (!user) {
       return jsonResp(null, CODE.NOT_FOUND, "用户不存在或已被注销");
-    }    
-    const user = rows[0];      
-    return jsonResp(user,CODE.SUCCESS, "获取用户信息成功" );
+    }
+    return jsonResp(user, CODE.SUCCESS, "获取用户信息成功");
   },
-/**
- * 修改个人资料：用户名、头像直接生效；邮箱需邮件激活后生效
- * 仅字段发生变更才执行更新/校验，相同值直接跳过处理
- */
-async updateProfile(
-  env: Env,
-  uid: number,
-  body: {
-    username?: string
-    email?: string
-    avatar?: string
-  }
-) {
-  const pool = createPgPool(env);
-  const now = getNowISO();
-  // 1. 一次性查询当前用户信息，用于新旧值比对
-  const userRes = await pool.query(
-    `SELECT id, username, email, avatar FROM users WHERE id = $1 AND deleted = false`,
-    [uid]
-  );
-  if (userRes.rows.length === 0) {
-    return jsonResp(null, CODE.NOT_FOUND, "用户不存在");
-  }
-  const current = userRes.rows[0];
-  const updateFields: string[] = [];
-  const params: any[] = [];
-  let paramIndex = 1;
-  let needSendEmailActivate = false;
-  let targetNewEmail = "";
 
-  // ====================== 1. 用户名处理 ======================
-  if (body.username?.trim()) {
-    const newUsername = body.username.trim();
-    // 新旧一致，直接跳过
-    if (newUsername !== current.username) {
-      // 格式校验
-      if (newUsername.length < 2 || newUsername.length > 20) {
-        return jsonResp(null, CODE.PARAM_ERR, "用户名长度需为2-20位");
-      }
-      // 唯一性校验
-      const existUser = await pool.query(
-        `SELECT 1 FROM users WHERE username = $1 AND id <> $2 AND deleted = false`,
-        [newUsername, uid]
-      );
-      if (existUser.rows.length > 0) {
-        return jsonResp(null, CODE.PARAM_ERR, "用户名已被占用");
-      }
-      updateFields.push(`username = $${paramIndex++}`);
-      params.push(newUsername);
+  /**
+   * 修改个人资料：用户名、头像直接生效；邮箱需邮件激活后生效
+   * 仅字段发生变更才执行更新/校验，相同值直接跳过处理
+   */
+  async updateProfile(
+    env: Env,
+    uid: number,
+    body: {
+      username?: string
+      email?: string
+      avatar?: string
     }
-  }
+  ) {
+    const knex = createKnex(env);
+    const updateTime = knex.fn.now();
+    // 1. 一次性查询当前用户信息，用于新旧值比对
+    const current = await knex('users')
+      .select('id', 'username', 'email', 'avatar')
+      .where({ id: uid, is_deleted: 0 })
+      .first();
 
-  // ====================== 2. 头像处理（支持清空） ======================
-  if (body.avatar !== undefined) {
-    const newAvatar = body.avatar?.trim() || null;
-    if (newAvatar !== current.avatar) {
-      updateFields.push(`avatar = $${paramIndex++}`);
-      params.push(newAvatar);
-    }
-  }
-
-  // ====================== 3. 邮箱处理（需激活，不直接更新主表） ======================
-  if (body.email?.trim()) {
-    const newEmail = body.email.trim();
-    if (newEmail !== current.email) {
-      // 格式校验
-      const emailReg = /^[\w.-]+@[\w-]+\.[\w.-]+$/;
-      if (!emailReg.test(newEmail)) {
-        return jsonResp(null, CODE.PARAM_ERR, "邮箱格式错误");
-      }
-      // 全局唯一校验
-      const existEmail = await pool.query(
-        `SELECT 1 FROM users WHERE email = $1 AND deleted = false`,
-        [newEmail]
-      );
-      if (existEmail.rows.length > 0) {
-        return jsonResp(null, CODE.PARAM_ERR, "该邮箱已被其他账号绑定");
-      }
-      needSendEmailActivate = true;
-      targetNewEmail = newEmail;
-    }
-  }
-  // ====================== 全局拦截：无任何字段变更 ======================
-  if (updateFields.length === 0 && !needSendEmailActivate) {
-    return jsonResp(null, CODE.PARAM_ERR, "未修改任何资料内容");
-  }
-
-  // ====================== 事务保证：基础资料更新 + 邮箱激活记录 ======================
-  try {
-    await pool.query("BEGIN");
-
-    // 更新用户名、头像
-    if (updateFields.length > 0) {
-      updateFields.push(`updated_at = $${paramIndex++}`);
-      params.push(now);
-      params.push(uid);
-      const updateSql = `
-        UPDATE users
-        SET ${updateFields.join(", ")}
-        WHERE id = $${paramIndex} AND deleted = false
-        RETURNING id, username, email, avatar
-      `;
-      await pool.query(updateSql, params);
+    if (!current) {
+      return jsonResp(null, CODE.NOT_FOUND, "用户不存在");
     }
 
-    // 写入邮箱激活临时记录 + 发送激活邮件
+    const updateData: Record<string, any> = {};
+    let needSendEmailActivate = false;
+    let targetNewEmail = "";
+
+    // ====================== 1. 用户名处理 ======================
+    if (body.username?.trim()) {
+      const newUsername = body.username.trim();
+      if (newUsername !== current.username) {
+        if (newUsername.length < 2 || newUsername.length > 20) {
+          return jsonResp(null, CODE.PARAM_ERR, "用户名长度需为2-20位");
+        }
+        const existUser = await knex('users')
+          .where('username', newUsername)
+          .whereNot('id', uid)
+          .where('is_deleted', 0)
+          .first();
+        if (existUser) {
+          return jsonResp(null, CODE.PARAM_ERR, "用户名已被占用");
+        }
+        updateData.username = newUsername;
+      }
+    }
+
+    // ====================== 2. 头像处理（支持清空） ======================
+    if (body.avatar !== undefined) {
+      const newAvatar = body.avatar?.trim() || null;
+      if (newAvatar !== current.avatar) {
+        updateData.avatar = newAvatar;
+      }
+    }
+
+    // ====================== 3. 邮箱处理（需激活，不直接更新主表） ======================
+    if (body.email?.trim()) {
+      const newEmail = body.email.trim();
+      if (newEmail !== current.email) {
+        const emailReg = /^[\w.-]+@[\w-]+\.[\w.-]+$/;
+        if (!emailReg.test(newEmail)) {
+          return jsonResp(null, CODE.PARAM_ERR, "邮箱格式错误");
+        }
+        const existEmail = await knex('users')
+          .where('email', newEmail)
+          .where('is_deleted', 0)
+          .first();
+        if (existEmail) {
+          return jsonResp(null, CODE.PARAM_ERR, "该邮箱已被其他账号绑定");
+        }
+        needSendEmailActivate = true;
+        targetNewEmail = newEmail;
+      }
+    }
+
+    // ====================== 全局拦截：无任何字段变更 ======================
+    if (Object.keys(updateData).length === 0 && !needSendEmailActivate) {
+      return jsonResp(null, CODE.PARAM_ERR, "未修改任何资料内容");
+    }
+
+    // ====================== 事务保证：基础资料更新 + 邮箱激活记录 ======================
+    try {
+      await knex.transaction(async (trx) => {
+        if (Object.keys(updateData).length > 0) {
+          updateData.updated_at =  knex.fn.now();
+          await trx('users')
+            .where({ id: uid, is_deleted: 0 })
+            .update(updateData);
+        }
+
+        // 写入邮箱激活临时记录
+        if (needSendEmailActivate) {
+          const activateToken = uuidv4();
+      
+
+          // 先软删除该用户旧的未激活邮箱记录，再新增
+          await trx('user_email_activate')
+            .where({ user_id: uid, is_deleted: 0 })
+            .update({ is_deleted: 1, updated_at: knex.fn.now() });
+
+          await trx('user_email_activate').insert({
+            user_id: uid,
+            new_email: targetNewEmail,
+            activate_token: activateToken,
+            activate_expire: knex.raw(`NOW() + INTERVAL '1' DAY`),
+            is_deleted: 0
+          });
+
+          const activateUrl = `${env.APP_BASE_URL}/change-email?token=${activateToken}`;
+          await sendChangeEmail(env, targetNewEmail, activateUrl);
+        }
+      });
+    } catch (err) {
+      const error = err as Error;
+      console.error("【修改个人资料异常】", { uid, msg: error.message, stack: error.stack });
+      return jsonResp(null, CODE.FAIL, "资料更新失败，请稍后重试");
+    }
+
     if (needSendEmailActivate) {
-      const activateToken = uuidv4();
-      const expireTime = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-      // 冲突时覆盖上一次未激活记录
-      await pool.query(`
-        INSERT INTO user_email_activate (user_id, new_email, activate_token, expired_at)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (user_id)
-        DO UPDATE SET new_email = $2, activate_token = $3, expired_at = $4, created_at = NOW()
-      `, [uid, targetNewEmail, activateToken, expireTime]);
+      return jsonResp(null, CODE.SUCCESS, "资料已保存，新邮箱请前往邮箱完成激活后生效");
+    }
+    return jsonResp(null, CODE.SUCCESS, "个人资料修改成功");
+  },
 
-      const activateUrl = `${env.APP_BASE_URL}/change-email?token=${activateToken}`;
-      await sendChangeEmail(env, targetNewEmail, activateUrl);
+  /**
+   * 修改当前登录用户密码
+   */
+  async changePwd(
+    env: Env,
+    uid: number,
+    body: { oldPwd: string; newPwd: string }
+  ) {
+    if (!body?.oldPwd?.trim() || !body?.newPwd?.trim()) {
+      return jsonResp(null, CODE.PARAM_ERR, "原密码、新密码不能为空");
+    }
+    if (body.newPwd.length < 6) {
+      return jsonResp(null, CODE.PARAM_ERR, "新密码长度不能少于6位");
+    }
+    if (body.oldPwd === body.newPwd) {
+      return jsonResp(null, CODE.PARAM_ERR, "新密码不能与原密码一致");
     }
 
-    await pool.query("COMMIT");
-  } catch (err) {
-    await pool.query("ROLLBACK");
-    return jsonResp(null, CODE.FAIL, "资料更新失败，请稍后重试");
-  }
-  // 区分两种返回文案
-  if (needSendEmailActivate) {
-    return jsonResp(null, CODE.SUCCESS, "资料已保存，新邮箱请前往邮箱完成激活后生效");
-  }
-  return jsonResp(null, CODE.SUCCESS, "个人资料修改成功");
-},
- /**
- * 修改当前登录用户密码（从JWT自动获取uid，禁止手动传uid越权）
- */
-async changePwd(
-  env: Env,
-  uid: number,
-  body: { oldPwd: string; newPwd: string }
-) {  
-  // 2. 请求参数合法性校验
-  if (!body?.oldPwd?.trim() || !body?.newPwd?.trim()) {
-    return jsonResp(null, CODE.PARAM_ERR, "原密码、新密码不能为空");
-  }
-  if (body.newPwd.length < 6) {
-    return jsonResp(null, CODE.PARAM_ERR, "新密码长度不能少于6位");
-  }
-  if (body.oldPwd === body.newPwd) {
-    return jsonResp(null, CODE.PARAM_ERR, "新密码不能与原密码一致");
-  }
+    const knex = createKnex(env);
+    const redis = createRedis(env);
 
-  const pool = createPgPool(env);
-  const redis = createRedis(env);
+    const user = await knex('users')
+      .select('password_hash')
+      .where({ id: uid, is_deleted: 0 })
+      .first();
 
-  // 3. 查询当前登录未删除用户密码
-  const { rows } = await pool.query(
-    `SELECT password_hash FROM users WHERE id = $1 AND deleted = false`,
-    [uid]
-  );
-  if (rows.length === 0) {
-    return jsonResp(null, CODE.NOT_FOUND, "当前用户不存在或已被注销");
-  }
+    if (!user) {
+      return jsonResp(null, CODE.NOT_FOUND, "当前用户不存在或已被注销");
+    }
 
-  // 4. 校验原密码
-  const isPwdMatch = await comparePassword(body.oldPwd, rows[0].password_hash);
-  if (!isPwdMatch) {
-    return jsonResp(null, CODE.PARAM_ERR, "原密码输入错误");
-  }
+    const isPwdMatch = await comparePassword(body.oldPwd, user.password_hash);
+    if (!isPwdMatch) {
+      return jsonResp(null, CODE.PARAM_ERR, "原密码输入错误");
+    }
 
-  // 5. 更新新密码
-  const salt = parseInt(env.BCRYPT_SALT_ROUND);
-  const newPasswordHash = await hashPassword(body.newPwd, salt);
-  const now = getNowISO();
-  await pool.query(
-    `UPDATE users SET password_hash = $1, updated_at = $2 WHERE id = $3`,
-    [newPasswordHash, now, uid]
-  );
+    const salt = parseInt(env.BCRYPT_SALT_ROUND);
+    const newPasswordHash = await hashPassword(body.newPwd, salt);
+    const updateTime = knex.fn.now();
 
-  // 6. 拉黑该用户所有刷新令牌，强制全设备下线
-  const tokenRes = await pool.query(
-    `SELECT refresh_token FROM user_refresh_token WHERE user_id = $1`,
-    [uid]
-  );
-  const tokenList = tokenRes.rows;
-  if (tokenList.length > 0) {
+    await knex('users')
+      .where({ id: uid, is_deleted: 0 })
+      .update({
+        password_hash: newPasswordHash,
+        updated_at: updateTime
+      });
+
+    // 拉黑所有刷新令牌，刷新令牌表逻辑删除
+    const tokenList = await knex('user_refresh_token')
+      .select('refresh_token')
+      .where({ user_id: uid, is_deleted: 0 });
+
     for (const item of tokenList) {
       await redis.set(`token:black:${item.refresh_token}`, "1", { ex: TOKEN_BLACK_EXPIRE });
     }
-    await pool.query(`DELETE FROM user_refresh_token WHERE user_id = $1`, [uid]);
-  }
+    await knex('user_refresh_token')
+      .where({ user_id: uid, is_deleted: 0 })
+      .update({ is_deleted: 1, updated_at: updateTime });
 
-  return jsonResp(null, CODE.SUCCESS, "密码修改成功，请重新登录");
-},
+    return jsonResp(null, CODE.SUCCESS, "密码修改成功，请重新登录");
+  },
 
- /**
- * 当前登录用户注销账号（逻辑删除），从JWT获取当前用户uid，禁止外部传入uid
- */
-async destroyAccount(
-  env: Env,
-  uid: number,
-) { 
-  const pool = createPgPool(env);
-  const redis = createRedis(env);
-  const now = getNowISO();
-  const TOKEN_BLACK_EXPIRE = 86400;
+  /**
+   * 当前登录用户注销账号（逻辑删除）
+   */
+  async destroyAccount(
+    env: Env,
+    uid: number,
+  ) {
+    const knex = createKnex(env);
+    const redis = createRedis(env);
+    const updateTime = knex.fn.now();
 
-  try {
-    // 开启事务
-    await pool.query("BEGIN");
+    try {
+      await knex.transaction(async (trx) => {
+        const user = await trx('users')
+          .where({ id: uid, is_deleted: 0 })
+          .first('id');
 
-    // 先校验用户是否存在且未注销
-    const userRes = await pool.query(
-      `SELECT id FROM users WHERE id = $1 AND deleted = false`,
-      [uid]
-    );
-    if (userRes.rows.length === 0) {
-      await pool.query("ROLLBACK");
-      return jsonResp(null, CODE.PARAM_ERR, "账号不存在或已注销");
+        if (!user) {
+          throw new Error("账号不存在或已注销");
+        }
+
+        // 用户逻辑删除
+        await trx('users')
+          .where({ id: uid, is_deleted: 0 })
+          .update({
+            is_deleted: 1,
+            updated_at: updateTime
+          });
+
+        // 刷新令牌批量拉黑+逻辑删除
+        const tokenList = await trx('user_refresh_token')
+          .select('refresh_token')
+          .where({ user_id: uid, is_deleted: 0 });
+
+        for (const item of tokenList) {
+          await redis.set(`token:black:${item.refresh_token}`, "1", {
+            ex: TOKEN_BLACK_EXPIRE
+          });
+        }
+        await trx('user_refresh_token')
+          .where({ user_id: uid, is_deleted: 0 })
+          .update({ is_deleted: 1, updated_at: updateTime });
+      });
+      return jsonResp(null, CODE.SUCCESS, "账号注销完成");
+    } catch (err) {
+      const error = err as Error;
+      console.error("【账号注销异常】", { uid, msg: error.message });
+      return jsonResp(null, CODE.FAIL, error.message || "账号注销失败，请稍后重试");
+    }
+  },
+
+  async getUserList(env: Env, payload: UserJWTPayload, search: URLSearchParams = new URLSearchParams()) {
+    const authErr = requireAdmin(payload);
+    if (authErr) return authErr;
+
+    const knex = createKnex(env);
+    const page = parseInt(search.get('page') || '1')
+    const pageSize = parseInt(search.get('pageSize') || '10')
+    const current = page > 0 ? page : 1
+    const size = pageSize > 0 && pageSize <= 100 ? pageSize : 10
+    const offset = (current - 1) * size
+
+    const keyword = search.get('keyword')?.trim()
+
+    let query = knex('users').where('is_deleted', 0);
+    if (keyword) {
+      const kw = `%${keyword}%`;
+      query.andWhereRaw('LOWER(username) LIKE LOWER(?) OR LOWER(email) LIKE LOWER(?)', [kw, kw]);
     }
 
-    // 逻辑删除用户
-    await pool.query(
-      `UPDATE users SET deleted = true, updated_at = $1 WHERE id = $2`,
-      [now, uid]
-    );
+    // 统计总数
+    const totalRow = await query.clone().count('* as total').first();
+    const total = Number(totalRow?.total ?? 0);
 
-    // 拉黑并清理所有刷新令牌，强制全设备下线
-    const tokenRes = await pool.query(
-      `SELECT refresh_token FROM user_refresh_token WHERE user_id = $1`,
-      [uid]
-    );
-    const tokenList = tokenRes.rows;
-    if (tokenList.length > 0) {
-      for (const item of tokenList) {
-        await redis.set(`token:black:${item.refresh_token}`, "1", {
-          ex: TOKEN_BLACK_EXPIRE
-        });
-      }
-      await pool.query(`DELETE FROM user_refresh_token WHERE user_id = $1`, [uid]);
-    }
+    // 分页数据
+    const list = await query
+      .select('id', 'username', 'email', 'role', 'status', 'is_frozen', 'created_at')
+      .orderBy('created_at', 'desc')
+      .limit(size)
+      .offset(offset);
 
-    await pool.query("COMMIT");
-    return jsonResp(null, CODE.SUCCESS, "账号注销完成");
-  } catch (err) {
-    await pool.query("ROLLBACK");
-    return jsonResp(null, CODE.FAIL, "账号注销失败，请稍后重试");
-  }
-},
- 
-async getUserList(env: Env, payload: UserJWTPayload, search: URLSearchParams = new URLSearchParams()) {
-  // 管理员校验
-  const authErr = requireAdmin(payload);
-  if (authErr) return authErr;
-
-  const pool = createPgPool(env);
-  // 分页参数
-  const page = parseInt(search.get('page') || '1')
-  const pageSize = parseInt(search.get('pageSize') || '10')
-  const current = page > 0 ? page : 1
-  const size = pageSize > 0 && pageSize <= 100 ? pageSize : 10
-  const offset = (current - 1) * size
-
-  // 搜索参数
-  const keyword = search.get('keyword')?.trim()
-  const params: any[] = []
-  let whereSql = 'WHERE deleted = false'
-
-  if (keyword) {
-    whereSql += ` AND (username ILIKE $1 OR email ILIKE $1)`
-    params.push(`%${keyword}%`)
-  }
-
-  // 总条数
-  const totalRes = await pool.query(`
-    SELECT COUNT(*) AS total FROM users ${whereSql}
-  `, params);
-  const total = Number(totalRes.rows[0].total);
-
-  // 分页列表
-  const listSql = `
-    SELECT id, username, email, role, status, is_frozen, created_at
-    FROM users
-    ${whereSql}
-    ORDER BY created_at DESC
-    LIMIT $${params.length + 1} OFFSET $${params.length + 2}
-  `
-  const listParams = [...params, size, offset]
-  const { rows } = await pool.query(listSql, listParams);
- return jsonResp({
-      list: rows,
+    return jsonResp({
+      list,
       total,
       page: current,
       pageSize: size
     }, CODE.SUCCESS)
-},
-async updateUserInfo(
-  env: Env,
-  payload: UserJWTPayload,
-  body: { userId: bigint; role?: string; isFrozen?: boolean }
-) {
-  const authErr = requireAdmin(payload);
-  if (authErr) return authErr;
-  const pool = createPgPool(env);
-  const { userId, role, isFrozen } = body;
+  },
 
-  const updateList: string[] = [];
-  const params: any[] = [];
-  let idx = 1;
-  if (role) {
-    updateList.push(`role = $${idx++}`);
-    params.push(role);
-  }
-  if (isFrozen !== undefined) {
-    updateList.push(`is_frozen = $${idx++}`);
-    params.push(isFrozen);
-  }
-  if (updateList.length === 0) {
-    return jsonResp(null, CODE.PARAM_ERR, "无更新字段");
-  }
-  params.push(userId);
+  async updateUserInfo(
+    env: Env,
+    payload: UserJWTPayload,
+    body: { userId: bigint; role?: string; isFrozen?: boolean }
+  ) {
+    const authErr = requireAdmin(payload);
+    if (authErr) return authErr;
+    const knex = createKnex(env);
+    const { userId, role, isFrozen } = body;
+    const updateTime = knex.fn.now();
 
-  await pool.query(
-    `UPDATE users SET ${updateList.join(',')} WHERE id = $${idx} AND deleted = false`,
-    params
-  );
-  return jsonResp(null, CODE.SUCCESS, "用户信息更新成功");
-},
-async adminResetUserPwd(
-  env: Env,
-  payload: UserJWTPayload,
-  body: { userId: bigint; newPwd: string }
-) {
-  const authErr = requireAdmin(payload);
-  if (authErr) return authErr;
-  const pool = createPgPool(env);
-  const saltRounds = parseInt(env.BCRYPT_SALT_ROUND);
-  const hash = await hashPassword(body.newPwd, saltRounds);
-  await pool.query(
-    `UPDATE users SET password_hash=$1, updated_at=$2 WHERE id=$3 AND deleted=false`,
-    [hash, getNowISO(), body.userId]
-  );
-  return jsonResp(null, CODE.SUCCESS, "用户密码重置成功");
-}, 
+    const updateData: Record<string, any> = {
+      updated_at: updateTime
+    };
+    if (role !== undefined) updateData.role = role;
+    if (isFrozen !== undefined) updateData.is_frozen = isFrozen ? 1 : 0;
+
+    if (Object.keys(updateData).length === 1) {
+      return jsonResp(null, CODE.PARAM_ERR, "无更新字段");
+    }
+
+    await knex('users')
+      .where({ id: userId, is_deleted: 0 })
+      .update(updateData);
+
+    return jsonResp(null, CODE.SUCCESS, "用户信息更新成功");
+  },
+
+  async adminResetUserPwd(
+    env: Env,
+    payload: UserJWTPayload,
+    body: { userId: bigint; newPwd: string }
+  ) {
+    const authErr = requireAdmin(payload);
+    if (authErr) return authErr;
+    const knex = createKnex(env);
+    const saltRounds = parseInt(env.BCRYPT_SALT_ROUND);
+    const hash = await hashPassword(body.newPwd, saltRounds);
+    const updateTime = knex.fn.now();
+
+    await knex('users')
+      .where({ id: body.userId, is_deleted: 0 })
+      .update({
+        password_hash: hash,
+        updated_at: updateTime
+      });
+
+    return jsonResp(null, CODE.SUCCESS, "用户密码重置成功");
+  },
 };

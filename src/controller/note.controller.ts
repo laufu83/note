@@ -1,49 +1,42 @@
 // src/controllers/note.controller.ts
-
-import { createPgPool } from "../config/pg";
-import { getNowISO } from "../utils/time";
+import { createKnex } from "../config/knex";
 import { jsonResp } from "../utils/response";
 import { CODE } from "../types/response";
 import type { Env } from "../types/env";
 import { noteEncryptService } from "../utils/note-encrypt";
 
-// 扩展请求体类型，支持加密相关字段
 type NoteCreateBody = {
   title: string;
   content?: string;
   categoryIds?: number[];
   tagNames?: string[];
-  is_draft?: boolean;
-  is_top?: boolean;
-  is_star?: boolean;
-  is_encrypted?: boolean;
+  is_draft?: number;
+  is_top?: number;
+  is_star?: number;
+  is_encrypted?: number;
   note_password?: string;
 };
 
 type NoteUpdateBody = {
   title?: string;
   content?: string;
-  is_draft?: boolean;
-  is_top?: boolean;
-  is_star?: boolean;
+  is_draft?: number;
+  is_top?: number;
+  is_star?: number;
   categoryIds?: number[];
   tagNames?: string[];
-  is_encrypted?: boolean;
-  note_password?: string;    // 旧密码（修改加密笔记时必传）
-  new_password?: string;     // 新密码（修改密码时使用）
+  is_encrypted?: number;
+  note_password?: string;
+  new_password?: string;
 };
 
 export const NoteController = {
-  /**
-   * 创建笔记：仅正文加密，标题、分类、标签明文存储
-   */
-  async create(env: Env, uid: number, body: NoteCreateBody) {
-    const pool = createPgPool(env);
-    const now = getNowISO();
+
+async create(env: Env, uid: number, body: NoteCreateBody) {
+    const knex = createKnex(env);
     const { title, content, categoryIds, tagNames, is_draft, is_top, is_star, is_encrypted, note_password } = body;
 
-    // 加密参数校验
-    if (is_encrypted) {
+    if (is_encrypted === 1) {
       if (!note_password) {
         return jsonResp(null, CODE.PARAM_ERR, '开启笔记加密必须设置访问密码');
       }
@@ -56,15 +49,13 @@ export const NoteController = {
       }
     }
 
-    let saveTitle: string = title;
+    let saveTitle = title;
     let saveContent: string | null = content ?? null;
     let salt: string | null = null;
     let iv: string | null = null;
     let passwordHash: string | null = null;
 
-    // 🔐 仅加密正文，标题、分类、标签明文
-    if (is_encrypted) {
-      // ⭐ 使用 encryptWithNewSalt 一步完成加密和哈希
+    if (is_encrypted === 1) {
       const result = await noteEncryptService.encryptWithNewSalt(content!, note_password!);
       saveContent = result.cipherText;
       salt = result.salt;
@@ -72,194 +63,184 @@ export const NoteController = {
       passwordHash = result.hash;
     }
 
-    // 插入主表
-    const { rows } = await pool.query(
-      `INSERT INTO notes(
-        user_id, title, content, is_draft, is_top, is_star, is_encrypted,
-        salt, iv, password_hash, created_at, updated_at, version, is_delete
-      ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 1, false) RETURNING id`,
-      [uid, saveTitle, saveContent, is_draft ?? false, is_top ?? false, is_star ?? false, 
-       !!is_encrypted, salt, iv, passwordHash, now, now]
-    );
-    const noteId = rows[0].id;
+    try {
+      return await knex.transaction(async (trx) => {
+        const insertData = {
+          user_id: uid,
+          title: saveTitle,
+          content: saveContent,
+          is_draft: is_draft ?? 0,
+          is_top: is_top ?? 0,
+          is_star: is_star ?? 0,
+          is_encrypted: is_encrypted ?? 0,
+          salt,
+          iv,
+          password_hash: passwordHash,
+          version: 1,
+          is_deleted: 0
+        };
+        // MySQL 不支持 returning，直接插入
+        await trx('notes').insert(insertData);
 
-    // 保存历史版本
-    await pool.query(
-      `INSERT INTO note_history(note_id, user_id, title, content, created_at) VALUES($1, $2, $3, $4, $5)`,
-      [noteId, uid, saveTitle, saveContent, now]
-    );
+        // 事务内查询当前用户最新一条笔记，拿到本次插入记录
+        const insertedNote = await trx('notes')
+          .where({ user_id: uid, is_deleted: 0 })
+          .orderBy('id', 'desc')
+          .first();
 
-    // 绑定分类
-    if (categoryIds && categoryIds.length) {
-      for (const cid of categoryIds) {
-        await pool.query(
-          `INSERT INTO note_category_rel(note_id, category_id) VALUES($1, $2) ON CONFLICT DO NOTHING`,
-          [noteId, cid]
-        );
-      }
-    }
-
-    // 绑定标签
-    if (tagNames && tagNames.length) {
-      for (const name of tagNames) {
-        let tagRes = await pool.query(
-          `SELECT id FROM note_tag WHERE user_id = $1 AND name = $2`,
-          [uid, name]
-        );
-        let tid: number;
-        if (tagRes.rows.length === 0) {
-          tagRes = await pool.query(
-            `INSERT INTO note_tag(user_id, name, created_at) VALUES($1, $2, $3) RETURNING id`,
-            [uid, name, now]
-          );
+        if (!insertedNote) {
+          throw new Error("未查询到刚创建的笔记数据");
         }
-        tid = tagRes.rows[0].id;
-        await pool.query(
-          `INSERT INTO note_tag_rel(note_id, tag_id) VALUES($1, $2) ON CONFLICT DO NOTHING`,
-          [noteId, tid]
-        );
-      }
-    }
+        const noteId = Number(insertedNote.id);
 
-    const detail = await pool.query(`SELECT * FROM notes WHERE id = $1`, [noteId]);
-    const result = detail.rows[0];
-    
-    // 加密笔记隐藏正文
-    if (result.is_encrypted) {
-      result.content = null;
-    }
-    
-    return jsonResp(result);
-  },
+        // ID 合法性校验
+        if (Number.isNaN(noteId) || noteId <= 0) {
+          throw new Error("生成笔记ID异常，ID非法");
+        }
 
-  /**
-   * 笔记列表：加密笔记只隐藏 content，标题、分类、标签正常返回
-   */
+        // 历史记录：不传创建时间，数据库默认填充
+        await trx('note_history').insert({
+          note_id: noteId,
+          user_id: uid,
+          title: saveTitle,
+          content: saveContent,
+          is_deleted: 0
+        });
+
+        // 分类关联
+        if (categoryIds && categoryIds.length) {
+          const rels = categoryIds.map(cid => ({ note_id: noteId, category_id: cid, is_deleted: 0 }));
+          await trx('note_category_rel').insert(rels).onConflict(['note_id', 'category_id', 'is_deleted']).ignore();
+        }
+
+        // 标签处理
+        if (tagNames && tagNames.length) {
+          for (const name of tagNames) {
+            let tag = await trx('note_tag').where({ user_id: uid, name, is_deleted: 0 }).first();
+            if (!tag) {
+              await trx('note_tag').insert({ user_id: uid, name, is_deleted: 0 });
+              tag = await trx('note_tag').where({ user_id: uid, name, is_deleted: 0 }).first();
+            }
+            await trx('note_tag_rel').insert({ note_id: noteId, tag_id: tag.id, is_deleted: 0 })
+              .onConflict(['note_id', 'tag_id', 'is_deleted']).ignore();
+          }
+        }
+
+        if (insertedNote.is_encrypted === 1) insertedNote.content = null;
+        return jsonResp(insertedNote);
+      });
+    } catch (err) {
+      const error = err as Error;
+      console.error("【创建笔记异常】", { uid, title, msg: error.message, stack: error.stack });
+      return jsonResp(null, CODE.FAIL, error.message);
+    }
+},
+
   async list(env: Env, uid: number, search: URLSearchParams) {
+    const knex = createKnex(env);
     const page = parseInt(search.get("page") || "1");
     const size = parseInt(search.get("size") || "20");
     const keyword = search.get("q");
     const isDraft = search.get("is_draft");
     const isStar = search.get("is_star");
     const isTop = search.get("is_top");
-    const isDelete = search.get("trash") === "1" || search.get("is_delete") === "true";
+    const isDelete = search.get("trash") === "1" || search.get("is_deleted") === "1";
     const offset = (page - 1) * size;
 
-    let sql = `
-      SELECT 
-        n.id,
-        n.title,
-        n.is_top,
-        n.is_draft,
-        n.is_star,
-        n.is_delete,
-        n.is_encrypted,
-        n.created_at,
-        n.updated_at,
-        COUNT(*) OVER() total,
-        COALESCE(c.category_ids, '[]'::json) AS "categoryIds",
-        COALESCE(c.category_names, '[]'::json) AS "categoryNames",
-        COALESCE(t.tag_names, '[]'::json) AS "tagNames"
-      FROM notes n
-      LEFT JOIN (
-        SELECT ncr.note_id, json_agg(ncr.category_id) category_ids, json_agg(nc.name) category_names
-        FROM note_category_rel ncr 
-        LEFT JOIN note_category nc ON ncr.category_id = nc.id 
-        GROUP BY ncr.note_id
-      ) c ON n.id = c.note_id
-      LEFT JOIN (
-        SELECT ntr.note_id, json_agg(nt.name) tag_names
-        FROM note_tag_rel ntr 
-        LEFT JOIN note_tag nt ON ntr.tag_id = nt.id 
-        GROUP BY ntr.note_id
-      ) t ON n.id = t.note_id
-      WHERE n.user_id = $1 AND n.is_delete = $2
-    `;
+    let query = knex('notes').select(
+            'id',
+            'title',
+            'is_encrypted',
+            'is_top',
+            'is_star',
+            'is_draft',
+            'is_deleted',
+            'created_at',
+            'updated_at',
+            'version'
+        )
+      .where({ user_id: uid, is_deleted: isDelete ? 1 : 0 });
 
-    const params: any[] = [uid, isDelete];
-    let idx = 3;
-
-    // 加密笔记禁止全文检索正文，仅标题模糊匹配
     if (keyword) {
-      sql += ` AND (n.is_encrypted = false AND n.note_tsv @@ to_tsquery('simple', $${idx}) OR n.is_encrypted = true AND n.title ILIKE $${idx + 1})`;
-      params.push(keyword.replace(/\s+/g, " & "), `%${keyword}%`);
-      idx += 2;
-    }
-    
-    if (isDraft !== null) {
-      sql += ` AND n.is_draft = $${idx++}`;
-      params.push(isDraft === "true");
-    }
-    if (isStar !== null) {
-      sql += ` AND n.is_star = $${idx++}`;
-      params.push(isStar === "true");
-    }
-    if (isTop !== null) {
-      sql += ` AND n.is_top = $${idx++}`;
-      params.push(isTop === "true");
+      const kw = `%${keyword}%`;
+      query.andWhere(function (qb) {
+        qb.where('is_encrypted', 0)
+          .andWhereRaw('LOWER(title) LIKE LOWER(?) OR LOWER(content) LIKE LOWER(?)', [kw, kw])
+          .orWhere(function (orQb) {
+            orQb.where('is_encrypted', 1)
+              .andWhereRaw('LOWER(title) LIKE LOWER(?)', [kw]);
+          });
+      });
     }
 
-    sql += ` ORDER BY n.is_top DESC, n.updated_at DESC LIMIT $${idx++} OFFSET $${idx++}`;
-    params.push(size, offset);
+    if (isDraft !== null) query.andWhere('is_draft', isDraft === '1' ? 1 : 0);
+    if (isStar !== null) query.andWhere('is_star', isStar === '1' ? 1 : 0);
+    if (isTop !== null) query.andWhere('is_top', isTop === '1' ? 1 : 0);
 
-    const pool = createPgPool(env);
-    const { rows } = await pool.query(sql, params);
-    const total = rows.length ? Number(rows[0].total) : 0;
+    const countResult = await query.clone().clearSelect().count('* as total').first();
+    const total = countResult ? Number(countResult.total) : 0;
 
-    // 加密笔记仅清空正文，分类标签正常返回
-    const list = rows.map(row => {
-      delete row.total;
-      row.tags = row.tagNames;
-      if (row.is_encrypted) {
-        row.content = null;
-      }
-      return row;
+    const noteList = await query
+      .orderBy('is_top', 'desc')
+      .orderBy('updated_at', 'desc')
+      .limit(size)
+      .offset(offset);
+
+    const noteIds = noteList.map(n => n.id);
+    const categoryRels = noteIds.length
+      ? await knex('note_category_rel')
+          .join('note_category', 'note_category_rel.category_id', 'note_category.id')
+          .whereIn('note_id', noteIds)
+          .andWhere('note_category_rel.is_deleted', 0)
+      : [];
+
+    const tagRels = noteIds.length
+      ? await knex('note_tag_rel')
+          .join('note_tag', 'note_tag_rel.tag_id', 'note_tag.id')
+          .whereIn('note_id', noteIds)
+          .andWhere('note_tag_rel.is_deleted', 0)
+      : [];
+
+    const list = noteList.map(row => {
+      const cate = categoryRels.filter(c => c.note_id === row.id);
+      const tags = tagRels.filter(t => t.note_id === row.id);
+      return {
+        ...row,
+        categoryIds: cate.map(c => c.category_id),
+        categoryNames: cate.map(c => c.name),
+        tagNames: tags.map(t => t.name),
+        tags: tags.map(t => t.name),
+        content: row.is_encrypted === 1 ? null : row.content
+      };
     });
 
     return jsonResp({ list, total });
   },
 
-  /**
-   * 笔记详情：
-   * 未加密：返回完整明文、分类标签
-   * 已加密：不传密码返回标题+分类+标签，content=null；传密码解密正文返回完整内容
-   */
   async detail(env: Env, uid: number, nid: string, search?: URLSearchParams) {
-    const pool = createPgPool(env);
+    const knex = createKnex(env);
     const query = search || new URLSearchParams();
     const decryptPwd = query.get('password');
-    
-    const noteRes = await pool.query(
-      `SELECT * FROM notes WHERE id = $1 AND user_id = $2 AND is_delete = false`,
-      [nid, uid]
-    );
-    
-    if (noteRes.rows.length === 0) {
-      return jsonResp(null, CODE.NOT_FOUND, "笔记不存在");
-    }
-    const note = noteRes.rows[0];
 
-    // 查询分类标签
-    const cateRes = await pool.query(
-      `SELECT category_id FROM note_category_rel WHERE note_id = $1`,
-      [nid]
-    );
-    note.categoryIds = cateRes.rows.map(item => item.category_id);
-    
-    const tagRes = await pool.query(
-      `SELECT nt.name FROM note_tag_rel ntr 
-       LEFT JOIN note_tag nt ON ntr.tag_id = nt.id 
-       WHERE ntr.note_id = $1 AND nt.user_id = $2`,
-      [nid, uid]
-    );
-    note.tagNames = tagRes.rows.map(item => item.name);
+    const note = await knex('notes')
+      .where({ id: nid, user_id: uid, is_deleted: 0 })
+      .first();
 
-    // 未加密直接返回全部
-    if (!note.is_encrypted) {
-      return jsonResp(note);
-    }
+    if (!note) return jsonResp(null, CODE.NOT_FOUND, "笔记不存在");
 
-    // 加密笔记未传密码：返回标题、分类、标签，正文置空
+    const cateRows = await knex('note_category_rel')
+      .select('category_id')
+      .where({ note_id: nid, is_deleted: 0 });
+    note.categoryIds = cateRows.map(item => item.category_id);
+
+    const tagRows = await knex('note_tag_rel')
+      .join('note_tag', 'note_tag_rel.tag_id', 'note_tag.id')
+      .select('note_tag.name')
+      .where({ 'note_tag_rel.note_id': nid, 'note_tag.user_id': uid, 'note_tag_rel.is_deleted': 0 });
+    note.tagNames = tagRows.map(item => item.name);
+
+    if (note.is_encrypted === 0) return jsonResp(note);
+
     if (!decryptPwd) {
       return jsonResp({
         id: note.id,
@@ -267,470 +248,309 @@ export const NoteController = {
         categoryIds: note.categoryIds,
         tagNames: note.tagNames,
         content: null,
-        is_encrypted: true,
+        is_encrypted: note.is_encrypted,
         is_top: note.is_top,
         is_star: note.is_star,
         is_draft: note.is_draft,
-        is_delete: note.is_delete,
+        is_deleted: note.is_deleted,
         created_at: note.created_at,
         updated_at: note.updated_at,
         version: note.version
       }, CODE.SUCCESS, '需要传入访问密码解密查看正文内容');
     }
 
-    // ⭐ 验证密码哈希
-    const isValid = await noteEncryptService.verifyPassword(
-      decryptPwd,
-      note.salt,          // ⭐ 注意：使用 note.salt，不是 password_hash
-      note.password_hash
-    );
-    
-    if (!isValid) {
-      return jsonResp(null, CODE.UNAUTH, '密码错误');
-    }
+    const isValid = await noteEncryptService.verifyPassword(decryptPwd, note.salt, note.password_hash);
+    if (!isValid) return jsonResp(null, CODE.UNAUTH, '密码错误');
 
-    // 解密正文
     try {
-      const plainContent = await noteEncryptService.decrypt(
-        note.content, 
-        decryptPwd, 
-        note.salt, 
-        note.iv
-      );
-      
-      return jsonResp({
-        id: note.id,
-        title: note.title,
-        content: plainContent,
-        categoryIds: note.categoryIds,
-        tagNames: note.tagNames,
-        is_encrypted: true,
-        is_top: note.is_top,
-        is_star: note.is_star,
-        is_draft: note.is_draft,
-        is_delete: note.is_delete,
-        created_at: note.created_at,
-        updated_at: note.updated_at,
-        version: note.version
-      });
-    } catch (error) {
+      const plainContent = await noteEncryptService.decrypt(note.content, decryptPwd, note.salt, note.iv);
+      return jsonResp({ ...note, content: plainContent });
+    } catch (err) {
+      console.error("【笔记解密失败】", { noteId: nid, err });
       return jsonResp(null, CODE.UNAUTH, '解密失败，数据可能已损坏');
     }
   },
 
-  /**
-   * 更新笔记：仅正文加密，标题、分类、标签始终明文
-   */
   async update(env: Env, uid: number, nid: string, body: NoteUpdateBody) {
-    const pool = createPgPool(env);
-    const now = getNowISO();
-    const client = await pool.connect();
-    
+    const knex = createKnex(env);
+    const updateTime = knex.fn.now();
     try {
-      await client.query("BEGIN");
+      return await knex.transaction(async (trx) => {
+        const origin = await trx('notes')
+          .select('id', 'title', 'content', 'is_encrypted', 'salt', 'iv', 'password_hash')
+          .where({ id: nid, user_id: uid, is_deleted: 0 })
+          .first();
+        if (!origin) throw new Error("笔记不存在");
 
-      // 查询原笔记数据（包含 password_hash）
-      const check = await client.query(
-        `SELECT id, title, content, is_encrypted, salt, iv, password_hash 
-         FROM notes WHERE id = $1 AND user_id = $2 AND is_delete = false`,
-        [nid, uid]
-      );
-      
-      if (check.rows.length === 0) {
-        throw new Error("笔记不存在");
-      }
-      const origin = check.rows[0];
+        // 保存历史版本
+        await trx('note_history').insert({
+          note_id: nid,
+          user_id: uid,
+          title: origin.title,
+          content: origin.content,
+          is_deleted: 0
+        });
 
-      // 保存历史版本
-      await client.query(
-        `INSERT INTO note_history(note_id, user_id, title, content, created_at) VALUES($1, $2, $3, $4, $5)`,
-        [nid, uid, origin.title, origin.content, now]
-      );
+        const { title, content, categoryIds, tagNames, is_encrypted, note_password, new_password } = body;
+        let saveTitle = title ?? origin.title;
+        let saveContent = origin.content;
+        let newSalt: string | null = origin.salt;
+        let newIv: string | null = origin.iv;
+        let newPasswordHash: string | null = origin.password_hash;
 
-      const { title, content, categoryIds, tagNames, is_encrypted, note_password, new_password } = body;
-      let saveTitle: string = title ?? origin.title;
-      let saveContent: string = origin.content;
-      let newSalt: string | null = origin.salt;
-      let newIv: string | null = origin.iv;
-      let newPasswordHash: string | null = origin.password_hash;
+        if (origin.is_encrypted === 1) {
+          if (!note_password) throw new Error('修改加密笔记必须传入原访问密码');
+          const isValid = await noteEncryptService.verifyPassword(note_password, origin.salt, origin.password_hash);
+          if (!isValid) throw new Error('原访问密码错误');
 
-      // 🔐 原笔记已加密
-      if (origin.is_encrypted) {
-        if (!note_password) {
-          throw new Error('修改加密笔记必须传入原访问密码');
-        }
-        
-        // ⭐ 验证旧密码
-        const isValid = await noteEncryptService.verifyPassword(
-          note_password,
-          origin.salt,
-          origin.password_hash
-        );
-        
-        if (!isValid) {
-          throw new Error('原访问密码错误');
-        }
-
-        // 子场景1：继续加密
-        if (is_encrypted) {
-          const usePwd = new_password || note_password;
-          
-          // 如果修改了密码，使用 changePassword 方法
-          if (new_password) {
-            // ⭐ 使用 changePassword 一步完成
-            const result = await noteEncryptService.changePassword(
-              content!,
-              new_password,
-              origin.salt
-            );
-            saveContent = result.cipherText;
-            newSalt = result.salt;
-            newIv = result.iv;
-            newPasswordHash = result.hash;
+          if (is_encrypted === 1) {
+            if (new_password) {
+              const res = await noteEncryptService.changePassword(content!, new_password, origin.salt);
+              saveContent = res.cipherText;
+              newSalt = res.salt;
+              newIv = res.iv;
+              newPasswordHash = res.hash;
+            } else {
+              const res = await noteEncryptService.encryptWithExistingSalt(content!, note_password, origin.salt);
+              saveContent = res.cipherText;
+              newSalt = res.salt;
+              newIv = res.iv;
+            }
           } else {
-            // 密码不变，只修改内容
-            // ⭐ 使用 encryptWithExistingSalt 复用盐
-            const result = await noteEncryptService.encryptWithExistingSalt(
-              content!,
-              note_password,
-              origin.salt
-            );
-            saveContent = result.cipherText;
-            newSalt = result.salt;
-            newIv = result.iv;
-            // password_hash 不变
+            const plain = await noteEncryptService.decrypt(origin.content, note_password, origin.salt, origin.iv);
+            saveContent = content ?? plain;
+            newSalt = null;
+            newIv = null;
+            newPasswordHash = null;
           }
         } else {
-          // 子场景2：关闭加密
-          const plainText = await noteEncryptService.decrypt(
-            origin.content, 
-            note_password, 
-            origin.salt, 
-            origin.iv
-          );
-          saveContent = content ?? plainText;
-          newSalt = null;
-          newIv = null;
-          newPasswordHash = null;
-        }
-      } else {
-        // 📝 原笔记明文
-        if (!is_encrypted) {
-          // 保持明文
-          saveContent = content ?? origin.content;
-          newSalt = null;
-          newIv = null;
-          newPasswordHash = null;
-        } else {
-          // 明文开启加密
-          if (!note_password) {
-            throw new Error('开启加密必须设置访问密码');
+          if (is_encrypted !== 1) {
+            saveContent = content ?? origin.content;
+            newSalt = null;
+            newIv = null;
+            newPasswordHash = null;
+          } else {
+            if (!note_password) throw new Error('开启加密必须设置访问密码');
+            const check = noteEncryptService.validatePassword(note_password);
+            if (!check.isValid) throw new Error(check.message);
+            const res = await noteEncryptService.encryptWithNewSalt(content!, note_password);
+            saveContent = res.cipherText;
+            newSalt = res.salt;
+            newIv = res.iv;
+            newPasswordHash = res.hash;
           }
-          
-          const checkPwd = noteEncryptService.validatePassword(note_password);
-          if (!checkPwd.isValid) {
-            throw new Error(checkPwd.message);
+        }
+
+        const updateData: Record<string, any> = {
+          title: saveTitle,
+          content: saveContent,
+          salt: newSalt,
+          iv: newIv,
+          password_hash: newPasswordHash,
+          is_encrypted: is_encrypted ?? 0,
+          updated_at: updateTime,
+        };
+        // 乐观锁版本+1
+        await trx('notes').where({ id: nid, user_id: uid, is_deleted: 0 }).update('version', knex.raw('version + 1'));
+        if (body.is_top !== undefined) updateData.is_top = body.is_top;
+        if (body.is_star !== undefined) updateData.is_star = body.is_star;
+        if (body.is_draft !== undefined) updateData.is_draft = body.is_draft;
+
+        await trx('notes').where({ id: nid, user_id: uid, is_deleted: 0 }).update(updateData);
+        const updatedNote = await trx('notes').where({ id: nid, is_deleted: 0 }).first();
+
+        // 分类：先逻辑删除旧关联，再新增
+        if (categoryIds !== undefined) {
+          await trx('note_category_rel')
+            .where({ note_id: nid, is_deleted: 0 })
+            .update({ is_deleted: 1, updated_at: updateTime });
+          if (categoryIds.length) {
+            const rels = categoryIds.map(cid => ({ note_id: nid, category_id: cid, is_deleted: 0 }));
+            await trx('note_category_rel').insert(rels).onConflict(['note_id', 'category_id', 'is_deleted']).ignore();
           }
-          
-          // ⭐ 使用 encryptWithNewSalt 一步完成
-          const result = await noteEncryptService.encryptWithNewSalt(
-            content!,
-            note_password
-          );
-          saveContent = result.cipherText;
-          newSalt = result.salt;
-          newIv = result.iv;
-          newPasswordHash = result.hash;
         }
-      }
 
-      // 构建更新字段
-      const fields: string[] = [];
-      const params: any[] = [];
-      let idx = 1;
-
-      fields.push(`title = $${idx++}`);
-      params.push(saveTitle);
-      
-      fields.push(`content = $${idx++}`);
-      params.push(saveContent);
-      
-      fields.push(`salt = $${idx++}`);
-      params.push(newSalt);
-      
-      fields.push(`iv = $${idx++}`);
-      params.push(newIv);
-      
-      fields.push(`password_hash = $${idx++}`);
-      params.push(newPasswordHash);
-      
-      fields.push(`is_encrypted = $${idx++}`);
-      params.push(!!is_encrypted);
-      
-      fields.push(`updated_at = $${idx++}`);
-      params.push(now);
-
-      // 可选字段
-      if (body.is_top !== undefined) {
-        fields.push(`is_top = $${idx++}`);
-        params.push(body.is_top);
-      }
-      if (body.is_star !== undefined) {
-        fields.push(`is_star = $${idx++}`);
-        params.push(body.is_star);
-      }
-      if (body.is_draft !== undefined) {
-        fields.push(`is_draft = $${idx++}`);
-        params.push(body.is_draft);
-      }
-
-      fields.push(`version = version + 1`);
-
-      params.push(nid, uid);
-      const updateSql = `UPDATE notes SET ${fields.join(", ")} 
-                         WHERE id = $${idx++} AND user_id = $${idx++} 
-                         RETURNING *`;
-      const res = await client.query(updateSql, params);
-
-      // 更新分类
-      if (categoryIds !== undefined) {
-        await client.query(`DELETE FROM note_category_rel WHERE note_id = $1`, [nid]);
-        for (const cid of categoryIds) {
-          await client.query(
-            `INSERT INTO note_category_rel(note_id, category_id) VALUES($1, $2) ON CONFLICT DO NOTHING`,
-            [nid, cid]
-          );
-        }
-      }
-
-      // 更新标签
-      if (tagNames !== undefined) {
-        await client.query(`DELETE FROM note_tag_rel WHERE note_id = $1`, [nid]);
-        for (const name of tagNames) {
-          let tagRes = await client.query(
-            `SELECT id FROM note_tag WHERE user_id = $1 AND name = $2`,
-            [uid, name]
-          );
-          let tid: number;
-          if (tagRes.rows.length === 0) {
-            tagRes = await client.query(
-              `INSERT INTO note_tag(user_id, name, created_at) VALUES($1, $2, $3) RETURNING id`,
-              [uid, name, now]
-            );
+        // 标签
+        if (tagNames !== undefined) {
+          await trx('note_tag_rel')
+            .where({ note_id: nid, is_deleted: 0 })
+            .update({ is_deleted: 1, updated_at:updateTime });
+          for (const name of tagNames) {
+            let tag = await trx('note_tag').where({ user_id: uid, name, is_deleted: 0 }).first();
+            if (!tag) {
+              await trx('note_tag').insert({ user_id: uid, name, is_deleted: 0 });
+              tag = await trx('note_tag').where({ user_id: uid, name, is_deleted: 0 }).first();
+            }
+            await trx('note_tag_rel').insert({ note_id: nid, tag_id: tag.id, is_deleted: 0 })
+              .onConflict(['note_id', 'tag_id', 'is_deleted']).ignore();
           }
-          tid = tagRes.rows[0].id;
-          await client.query(
-            `INSERT INTO note_tag_rel(note_id, tag_id) VALUES($1, $2) ON CONFLICT DO NOTHING`,
-            [nid, tid]
-          );
         }
-      }
 
-      await client.query("COMMIT");
-      
-      const result = res.rows[0];
-      // 加密笔记隐藏正文
-      if (result.is_encrypted) {
-        result.content = null;
-      }
-      
-      return jsonResp(result);
+        if (updatedNote.is_encrypted === 1) updatedNote.content = null;
+        return jsonResp(updatedNote);
+      });
     } catch (err) {
-      await client.query("ROLLBACK");
-      return jsonResp(null, CODE.FAIL, (err as Error).message);
-    } finally {
-      client.release();
+      const error = err as Error;
+      console.error("【更新笔记异常】", { uid, nid, msg: error.message, stack: error.stack });
+      return jsonResp(null, CODE.FAIL, error.message);
     }
   },
 
-  /**
-   * 移入回收站：加密笔记移入不需要密码，仅软删除
-   */
+  // 移入回收站（逻辑删除）
   async moveRecycle(env: Env, uid: number, nid: string) {
-    const pool = createPgPool(env);
-    const expire = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
-    const now = getNowISO();
-    const res = await pool.query(
-      `UPDATE notes SET is_delete = true, delete_expire = $1, updated_at = $2 
-       WHERE id = $3 AND user_id = $4 RETURNING *`,
-      [expire, now, nid, uid]
-    );
-    if (res.rowCount === 0) {
-      return jsonResp(null, CODE.NOT_FOUND, "笔记不存在");
-    }
+    const knex = createKnex(env);
+    const expire =  knex.raw(`CURRENT_TIMESTAMP + INTERVAL '30' DAY`);
+    const affected = await knex('notes')
+      .where({ id: nid, user_id: uid, is_deleted: 0 })
+      .update({
+        is_deleted: 1,
+        delete_expire: expire,
+        updated_at: knex.fn.now()
+      });
+    if (!affected) return jsonResp(null, CODE.NOT_FOUND, "笔记不存在");
     return jsonResp(null, CODE.SUCCESS, "已移入回收站");
   },
 
+  // 从回收站恢复
   async restore(env: Env, uid: number, nid: string) {
-    const pool = createPgPool(env);
-    const now = getNowISO();
-    const res = await pool.query(
-      `UPDATE notes SET is_delete = false, delete_expire = null, updated_at = $1 
-       WHERE id = $2 AND user_id = $3 RETURNING *`,
-      [now, nid, uid]
-    );
-    if (res.rowCount === 0) {
-      return jsonResp(null, CODE.NOT_FOUND, "笔记不存在");
-    }
+    const knex = createKnex(env);
+    const affected = await knex('notes')
+      .where({ id: nid, user_id: uid, is_deleted: 1 })
+      .update({
+        is_deleted: 0,
+        delete_expire: null,
+        updated_at: knex.fn.now()
+      });
+    if (!affected) return jsonResp(null, CODE.NOT_FOUND, "笔记不存在");
     return jsonResp(null, CODE.SUCCESS, "恢复成功");
   },
 
+  // 永久删除：物理删除所有关联数据
   async permanentDelete(env: Env, uid: number, nid: string) {
-    const pool = createPgPool(env);
-    await pool.query(`DELETE FROM note_category_rel WHERE note_id = $1`, [nid]);
-    await pool.query(`DELETE FROM note_tag_rel WHERE note_id = $1`, [nid]);
-    await pool.query(`DELETE FROM note_history WHERE note_id = $1`, [nid]);
-    await pool.query(`DELETE FROM note_share WHERE note_id = $1`, [nid]);
-    const res = await pool.query(
-      `DELETE FROM notes WHERE id = $1 AND user_id = $2`,
-      [nid, uid]
-    );
-    if (res.rowCount === 0) {
-      return jsonResp(null, CODE.NOT_FOUND, "笔记不存在");
-    }
-    return jsonResp(null, CODE.SUCCESS, "永久删除成功");
-  },
-
-  async rollback(env: Env, uid: number, nid: string, hid: number) {
-    const pool = createPgPool(env);
-    const now = getNowISO();
-    
-    const noteCheck = await pool.query(
-      `SELECT id FROM notes WHERE id = $1 AND user_id = $2`,
-      [nid, uid]
-    );
-    if (noteCheck.rows.length === 0) {
-      return jsonResp(null, CODE.FORBIDDEN, "无权限操作");
-    }
-    
-    const historyRes = await pool.query(
-      `SELECT title, content FROM note_history WHERE id = $1 AND note_id = $2`,
-      [hid, nid]
-    );
-    if (historyRes.rows.length === 0) {
-      return jsonResp(null, CODE.NOT_FOUND, "版本不存在");
-    }
-    
-    const old = historyRes.rows[0];
-    await pool.query(
-      `INSERT INTO note_history(note_id, user_id, title, content, created_at) 
-       VALUES($1, $2, (SELECT title FROM notes WHERE id = $1), (SELECT content FROM notes WHERE id = $1), $3)`,
-      [nid, uid, now]
-    );
-    await pool.query(
-      `UPDATE notes SET title = $1, content = $2, updated_at = $3 WHERE id = $4`,
-      [old.title, old.content, now, nid]
-    );
-    
-    return jsonResp(null, CODE.SUCCESS, "版本回滚成功");
-  },
-
-  async clearTrash(env: Env, uid: number) {
-    const pool = createPgPool(env);
+    const knex = createKnex(env);
     try {
-      await pool.query("BEGIN");
-      
-      const noteRes = await pool.query(
-        `SELECT id FROM notes WHERE user_id = $1 AND is_delete = true`,
-        [uid]
-      );
-      const noteIds = noteRes.rows.map(item => item.id);
-      
-      if (noteIds.length === 0) {
-        await pool.query("ROLLBACK");
-        return jsonResp(null, CODE.PARAM_ERR, "回收站暂无数据可清空");
-      }
-      
-      await pool.query(`DELETE FROM note_category_rel WHERE note_id = ANY($1::bigint[])`, [noteIds]);
-      await pool.query(`DELETE FROM note_tag_rel WHERE note_id = ANY($1::bigint[])`, [noteIds]);
-      await pool.query(`DELETE FROM notes WHERE user_id = $1 AND is_delete = true`, [uid]);
-      
-      await pool.query("COMMIT");
-      return jsonResp(null, CODE.SUCCESS, "回收站清空成功");
+      return await knex.transaction(async trx => {
+        await trx('note_category_rel').where({ note_id: nid }).delete();
+        await trx('note_tag_rel').where({ note_id: nid }).delete();
+        await trx('note_history').where({ note_id: nid }).delete();
+        await trx('note_share').where({ note_id: nid }).delete();
+        const delCnt = await trx('notes').where({ id: nid, user_id: uid, is_deleted: 1 }).delete();
+        if (!delCnt) throw new Error('笔记不存在，仅回收站可永久删除');
+      }).then(() => jsonResp(null, CODE.SUCCESS, "永久删除成功"));
     } catch (err) {
-      await pool.query("ROLLBACK");
-      return jsonResp(null, CODE.FAIL, "清空回收站失败，请稍后重试");
+      const error = err as Error;
+      console.error("【永久删除笔记异常】", { uid, nid, msg: error.message });
+      return jsonResp(null, CODE.FAIL, error.message);
     }
   },
 
-  /**
-   * 导出：加密笔记仅隐藏正文，分类标签正常返回
-   */
+  // 版本回滚
+  async rollback(env: Env, uid: number, nid: string, hid: number) {
+    const knex = createKnex(env);
+    const note = await knex('notes').where({ id: nid, user_id: uid, is_deleted: 0 }).first();
+    if (!note) return jsonResp(null, CODE.FORBIDDEN, "无权限操作");
+
+    const history = await knex('note_history').where({ id: hid, note_id: nid, is_deleted: 0 }).first();
+    if (!history) return jsonResp(null, CODE.NOT_FOUND, "版本不存在");
+
+    try {
+      await knex.transaction(async trx => {
+        // 先保存当前版本
+        await trx('note_history').insert({
+          note_id: nid, user_id: uid, title: note.title, content: note.content, is_deleted: 0
+        });
+        // 回滚数据，更新时间+乐观锁
+        await trx('notes').where({ id: nid, is_deleted: 0 }).update({
+          title: history.title,
+          content: history.content,
+          updated_at: knex.fn.now(),
+          version: knex.raw('version + 1')
+        });
+      });
+      return jsonResp(null, CODE.SUCCESS, "版本回滚成功");
+    } catch (err) {
+      const error = err as Error;
+      console.error("【笔记回滚异常】", error.message);
+      return jsonResp(null, CODE.FAIL, error.message);
+    }
+  },
+
+  // 清空回收站
+  async clearTrash(env: Env, uid: number) {
+    const knex = createKnex(env);
+    try {
+      return await knex.transaction(async trx => {
+        const trash = await trx('notes').select('id').where({ user_id: uid, is_deleted: 1 });
+        const ids = trash.map(i => i.id);
+        if (!ids.length) throw new Error("回收站暂无数据可清空");
+
+        await trx('note_category_rel').whereIn('note_id', ids).delete();
+        await trx('note_tag_rel').whereIn('note_id', ids).delete();
+        await trx('note_history').whereIn('note_id', ids).delete();
+        await trx('note_share').whereIn('note_id', ids).delete();
+        await trx('notes').where({ user_id: uid, is_deleted: 1 }).delete();
+        return jsonResp(null, CODE.SUCCESS, "回收站清空成功");
+      });
+    } catch (err) {
+      const error = err as Error;
+      console.error("【清空回收站异常】", error.message);
+      return jsonResp(null, CODE.FAIL, error.message);
+    }
+  },
+
+  // 批量导出笔记
   async exportAllNote(env: Env, uid: number, search: URLSearchParams) {
+    const knex = createKnex(env);
     const page = parseInt(search.get("page") || "1");
     const size = parseInt(search.get("size") || "0");
     const keyword = search.get("q")?.trim();
     const isDraftStr = search.get("is_draft");
     const isStarStr = search.get("is_star");
-    const isDelete = search.get("trash") === "1" || search.get("is_delete") === "true";
+    const isDelete = search.get("trash") === "1" || search.get("is_deleted") === "1";
     const offset = size > 0 ? (page - 1) * size : 0;
 
-    const pool = createPgPool(env);
-    let sql = `
-      SELECT 
-        n.id,
-        n.title,
-        n.content,
-        n.is_top,
-        n.is_draft,
-        n.is_star,
-        n.is_delete,
-        n.is_encrypted,
-        n.created_at,
-        n.updated_at,
-        COALESCE(c.category_ids, '[]'::json) AS "categoryIds",
-        COALESCE(c.category_names, '[]'::json) AS "categoryNames",
-        COALESCE(t.tag_names, '[]'::json) AS "tagNames"
-      FROM notes n
-      LEFT JOIN (
-        SELECT ncr.note_id, json_agg(ncr.category_id) category_ids, json_agg(nc.name) category_names
-        FROM note_category_rel ncr 
-        LEFT JOIN note_category nc ON ncr.category_id = nc.id 
-        GROUP BY ncr.note_id
-      ) c ON n.id = c.note_id
-      LEFT JOIN (
-        SELECT ntr.note_id, json_agg(nt.name) tag_names
-        FROM note_tag_rel ntr 
-        LEFT JOIN note_tag nt ON ntr.tag_id = nt.id 
-        GROUP BY ntr.note_id
-      ) t ON n.id = t.note_id
-      WHERE n.user_id = $1 AND n.is_delete = $2
-    `;
-
-    const params: any[] = [uid, isDelete];
-    let idx = 3;
-    
+    let query = knex('notes').where({ user_id: uid, is_deleted: isDelete ? 1 : 0 });
     if (keyword) {
-      sql += ` AND (n.is_encrypted = false AND n.note_tsv @@ to_tsquery('simple', $${idx}) OR n.is_encrypted = true AND n.title ILIKE $${idx + 1})`;
-      params.push(keyword.replace(/\s+/g, " & "), `%${keyword}%`);
-      idx += 2;
+      const kw = `%${keyword}%`;
+      query.andWhere(function (qb) {
+        qb.where('is_encrypted', 0)
+          .andWhereRaw('LOWER(title) LIKE LOWER(?) OR LOWER(content) LIKE LOWER(?)', [kw, kw])
+          .orWhere(q => q.where('is_encrypted', 1).andWhereRaw('LOWER(title) LIKE LOWER(?)', [kw]));
+      });
     }
-    
-    if (isDraftStr !== null) {
-      sql += ` AND n.is_draft = $${idx++}`;
-      params.push(isDraftStr === "true");
-    }
-    if (isStarStr !== null) {
-      sql += ` AND n.is_star = $${idx++}`;
-      params.push(isStarStr === "true");
-    }
-    
-    sql += ` ORDER BY n.is_top DESC, n.updated_at DESC`;
-    if (size > 0) {
-      sql += ` LIMIT $${idx++} OFFSET $${idx++}`;
-      params.push(size, offset);
-    }
+    if (isDraftStr !== null) query.andWhere('is_draft', isDraftStr === '1' ? 1 : 0);
+    if (isStarStr !== null) query.andWhere('is_star', isStarStr === '1' ? 1 : 0);
 
-    const { rows } = await pool.query(sql, params);
-    
-    // 加密笔记只清空正文
+    query.orderBy('is_top', 'desc').orderBy('updated_at', 'desc');
+    if (size > 0) query.limit(size).offset(offset);
+
+    const rows = await query;
+    const noteIds = rows.map(r => r.id);
+    const categoryRels = noteIds.length
+      ? await knex('note_category_rel')
+          .join('note_category', 'note_category_rel.category_id', 'note_category.id')
+          .whereIn('note_id', noteIds)
+          .andWhere('note_category_rel.is_deleted', 0)
+      : [];
+    const tagRels = noteIds.length
+      ? await knex('note_tag_rel')
+          .join('note_tag', 'note_tag_rel.tag_id', 'note_tag.id')
+          .whereIn('note_id', noteIds)
+          .andWhere('note_tag_rel.is_deleted', 0)
+      : [];
+
     const result = rows.map(row => {
-      if (row.is_encrypted) {
-        row.content = null;
-      }
-      return row;
+      const cate = categoryRels.filter(c => c.note_id === row.id);
+      const tags = tagRels.filter(t => t.note_id === row.id);
+      return {
+        ...row,
+        categoryIds: cate.map(c => c.category_id),
+        categoryNames: cate.map(c => c.name),
+        tagNames: tags.map(t => t.name),
+        content: row.is_encrypted === 1 ? null : row.content
+      };
     });
-    
+
     return jsonResp(result, CODE.SUCCESS, "查询成功");
   }
 };

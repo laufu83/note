@@ -11,7 +11,6 @@ import { authMiddleware } from "./middleware";
 import { rateLimitCheck } from "../utils/rate-limit";
 import { jsonResp } from "../utils/response";
 import { CODE } from "../types/response";
-import { snakeToCamel } from "../utils/naming";
 import type { Env } from "../types/env";
 import type { UserJWTPayload } from "../types/model";
 import {

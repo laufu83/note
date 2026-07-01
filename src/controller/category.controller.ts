@@ -1,56 +1,82 @@
-import { createPgPool } from "../config/pg";
-import { getNowISO } from "../utils/time";
+// src/controllers/category.controller.ts
+import { createKnex } from "../config/knex";
 import { jsonResp } from "../utils/response";
 import { CODE } from "../types/response";
 import type { Env } from "../types/env";
 
 export const CategoryController = {
   async create(env: Env, uid: number, body: { name: string; sort: number }) {
-    const pool = createPgPool(env);
-    const now = getNowISO();
+    const knex = createKnex(env);
     try {
-      const res = await pool.query(
-        `INSERT INTO note_category(user_id,name,sort,created_at,updated_at) VALUES($1,$2,$3,$4,$5) RETURNING *`,
-        [uid, body.name, body.sort, now, now]
-      );
-      return jsonResp(res.rows[0]);
-    } catch {
+      const insertData = {
+        user_id: uid,
+        name: body.name,
+        sort: body.sort,
+        is_deleted: 0
+      };
+      // 双库兼容 returning 获取新增记录
+      const [category] = await knex("note_category")
+        .insert(insertData)
+        .returning("*");
+
+      return jsonResp(category);
+    } catch (err) {
+      const error = err as Error;
+      console.error("【创建分类失败】", { uid, name: body.name, msg: error.message, stack: error.stack });
       return jsonResp(null, CODE.FAIL, "该分类名称已存在");
     }
   },
 
   async list(env: Env, uid: number) {
-    const pool = createPgPool(env);
-    const { rows } = await pool.query(`SELECT * FROM note_category WHERE user_id=$1 ORDER BY sort DESC`, [uid]);
-    return jsonResp(rows);
+    const knex = createKnex(env);
+    const list = await knex("note_category")
+      .where({ user_id: uid, is_deleted: 0 })
+      .orderBy("sort", "desc");
+    return jsonResp(list);
   },
 
   async update(env: Env, uid: number, cid: string, body: { name?: string; sort?: number }) {
-    const pool = createPgPool(env);
-    const now = getNowISO();
-    const fields: string[] = [];
-    const params: any[] = [];
-    let idx = 1;
+    const knex = createKnex(env);
+    const updateData: Record<string, any> = {
+      updated_at: knex.raw('NOW()')
+    };
     if (body.name !== undefined) {
-      fields.push(`name=$${idx++}`);
-      params.push(body.name);
+      updateData.name = body.name;
     }
     if (body.sort !== undefined) {
-      fields.push(`sort=$${idx++}`);
-      params.push(body.sort);
+      updateData.sort = body.sort;
     }
-    params.push(now, cid, uid);
-    const sql = `UPDATE note_category SET ${fields.join(",")},updated_at=$${idx++} WHERE id=$${idx++} AND user_id=$${idx++} RETURNING *`;
-    const res = await pool.query(sql, params);
-    if (res.rowCount === 0) return jsonResp(null, CODE.NOT_FOUND, "分类不存在");
-    return jsonResp(res.rows[0]);
+
+    const rowCount = await knex("note_category")
+      .where({ id: cid, user_id: uid, is_deleted: 0 })
+      .update(updateData);
+
+    if (rowCount === 0) {
+      return jsonResp(null, CODE.NOT_FOUND, "分类不存在");
+    }
+    const updatedItem = await knex("note_category")
+      .where({ id: cid, is_deleted: 0 })
+      .first();
+    return jsonResp(updatedItem);
   },
 
   async del(env: Env, uid: number, cid: string) {
-    const pool = createPgPool(env);
-    await pool.query(`DELETE FROM note_category_rel WHERE category_id=$1`, [cid]);
-    const res = await pool.query(`DELETE FROM note_category WHERE id=$1 AND user_id=$2`, [cid, uid]);
-    if (res.rowCount === 0) return jsonResp(null, CODE.NOT_FOUND, "分类不存在");
+    const knex = createKnex(env);
+    await knex.transaction(async (trx) => {
+      // 中间表逻辑删除
+      await trx("note_category_rel")
+        .where({ category_id: cid, is_deleted: 0 })
+        .update({ is_deleted: 1, updated_at: knex.raw('NOW()') });
+
+      // 分类逻辑删除
+      const rowCount = await trx("note_category")
+        .where({ id: cid, user_id: uid, is_deleted: 0 })
+        .update({ is_deleted: 1, updated_at: knex.raw('NOW()')});
+
+      if (rowCount === 0) {
+        throw new Error("分类不存在");
+      }
+    });
     return jsonResp(null, CODE.SUCCESS, "删除成功");
-  },
+  }
 };
