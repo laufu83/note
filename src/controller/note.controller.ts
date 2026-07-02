@@ -256,7 +256,7 @@ export const NoteController = {
         ...row,
         categoryIds: categoryMap.get(row.id)?.ids || [],
         categoryNames: categoryMap.get(row.id)?.names || [],
-        tagNames: tagMap.get(row.id) || [],
+        tags: tagMap.get(row.id) || [],
         // content 字段在列表查询中不返回
         content: undefined
       }));
