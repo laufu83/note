@@ -31,8 +31,7 @@ type NoteUpdateBody = {
 };
 
 export const NoteController = {
-
-async create(env: Env, uid: number, body: NoteCreateBody) {
+  async create(env: Env, uid: number, body: NoteCreateBody) {
     const knex = createKnex(env);
     const { title, content, categoryIds, tagNames, is_draft, is_top, is_star, is_encrypted, note_password } = body;
 
@@ -79,26 +78,9 @@ async create(env: Env, uid: number, body: NoteCreateBody) {
           version: 1,
           is_deleted: 0
         };
-        // MySQL 不支持 returning，直接插入
-        await trx('notes').insert(insertData);
 
-        // 事务内查询当前用户最新一条笔记，拿到本次插入记录
-        const insertedNote = await trx('notes')
-          .where({ user_id: uid, is_deleted: 0 })
-          .orderBy('id', 'desc')
-          .first();
+        const [noteId] = await trx('notes').insert(insertData);
 
-        if (!insertedNote) {
-          throw new Error("未查询到刚创建的笔记数据");
-        }
-        const noteId = Number(insertedNote.id);
-
-        // ID 合法性校验
-        if (Number.isNaN(noteId) || noteId <= 0) {
-          throw new Error("生成笔记ID异常，ID非法");
-        }
-
-        // 历史记录：不传创建时间，数据库默认填充
         await trx('note_history').insert({
           note_id: noteId,
           user_id: uid,
@@ -107,69 +89,116 @@ async create(env: Env, uid: number, body: NoteCreateBody) {
           is_deleted: 0
         });
 
-        // 分类关联
-        if (categoryIds && categoryIds.length) {
-          const rels = categoryIds.map(cid => ({ note_id: noteId, category_id: cid, is_deleted: 0 }));
-          await trx('note_category_rel').insert(rels).onConflict(['note_id', 'category_id', 'is_deleted']).ignore();
+        if (categoryIds?.length) {
+          const rels = categoryIds.map(cid => ({ 
+            note_id: noteId, 
+            category_id: cid, 
+            is_deleted: 0 
+          }));
+          await trx('note_category_rel')
+            .insert(rels)
+            .onConflict(['note_id', 'category_id', 'is_deleted'])
+            .ignore();
         }
 
-        // 标签处理
-        if (tagNames && tagNames.length) {
-          for (const name of tagNames) {
-            let tag = await trx('note_tag').where({ user_id: uid, name, is_deleted: 0 }).first();
-            if (!tag) {
-              await trx('note_tag').insert({ user_id: uid, name, is_deleted: 0 });
-              tag = await trx('note_tag').where({ user_id: uid, name, is_deleted: 0 }).first();
-            }
-            await trx('note_tag_rel').insert({ note_id: noteId, tag_id: tag.id, is_deleted: 0 })
-              .onConflict(['note_id', 'tag_id', 'is_deleted']).ignore();
+        if (tagNames?.length) {
+          const uniqueTagNames = [...new Set(tagNames)];
+          
+          const existingTags = await trx('note_tag')
+            .where({ user_id: uid, is_deleted: 0 })
+            .whereIn('name', uniqueTagNames)
+            .select('id', 'name');
+
+          const existingTagMap = new Map(
+            existingTags.map(tag => [tag.name, tag.id])
+          );
+
+          const newTagNames = uniqueTagNames.filter(
+            name => !existingTagMap.has(name)
+          );
+
+          if (newTagNames.length) {
+            const newTags = newTagNames.map(name => ({
+              user_id: uid,
+              name,
+              is_deleted: 0
+            }));
+            
+            await trx('note_tag').insert(newTags);
+            
+            const newTagRecords = await trx('note_tag')
+              .where({ user_id: uid, is_deleted: 0 })
+              .whereIn('name', newTagNames)
+              .select('id', 'name');
+            
+            newTagRecords.forEach(tag => {
+              existingTagMap.set(tag.name, tag.id);
+            });
           }
+
+          const tagRels = uniqueTagNames.map(name => ({
+            note_id: noteId,
+            tag_id: existingTagMap.get(name)!,
+            is_deleted: 0
+          }));
+
+          await trx('note_tag_rel')
+            .insert(tagRels)
+            .onConflict(['note_id', 'tag_id', 'is_deleted'])
+            .ignore();
         }
 
-        if (insertedNote.is_encrypted === 1) insertedNote.content = null;
+        const insertedNote = await trx('notes')
+          .where({ id: noteId, user_id: uid, is_deleted: 0 })
+          .first();
+
+        if (insertedNote?.is_encrypted === 1) {
+          insertedNote.content = null;
+        }
+
         return jsonResp(insertedNote);
       });
     } catch (err) {
       const error = err as Error;
-      console.error("【创建笔记异常】", { uid, title, msg: error.message, stack: error.stack });
+      console.error("【创建笔记异常】", { uid, title, msg: error.message });
       return jsonResp(null, CODE.FAIL, error.message);
     }
-},
+  },
 
   async list(env: Env, uid: number, search: URLSearchParams) {
     const knex = createKnex(env);
-    const page = parseInt(search.get("page") || "1");
-    const size = parseInt(search.get("size") || "20");
-    const keyword = search.get("q");
+    const page = Math.max(1, parseInt(search.get("page") || "1"));
+    const size = Math.min(100, Math.max(1, parseInt(search.get("size") || "20")));
+    const keyword = search.get("q")?.trim();
     const isDraft = search.get("is_draft");
     const isStar = search.get("is_star");
     const isTop = search.get("is_top");
     const isDelete = search.get("trash") === "1" || search.get("is_deleted") === "1";
     const offset = (page - 1) * size;
 
-    let query = knex('notes').select(
-            'id',
-            'title',
-            'is_encrypted',
-            'is_top',
-            'is_star',
-            'is_draft',
-            'is_deleted',
-            'created_at',
-            'updated_at',
-            'version'
-        )
+    // 优化：只查询列表展示需要的字段，不查询 content
+    let query = knex('notes')
+      .select(
+        'id',
+        'title',
+        'is_encrypted',
+        'is_top',
+        'is_star',
+        'is_draft',
+        'is_deleted',
+        'created_at',
+        'updated_at',
+        'version'
+        // 注意：不查询 content 字段
+      )
       .where({ user_id: uid, is_deleted: isDelete ? 1 : 0 });
 
+    // 优化：关键词搜索只搜索 title，不搜索 content
     if (keyword) {
       const kw = `%${keyword}%`;
       query.andWhere(function (qb) {
-        qb.where('is_encrypted', 0)
-          .andWhereRaw('LOWER(title) LIKE LOWER(?) OR LOWER(content) LIKE LOWER(?)', [kw, kw])
-          .orWhere(function (orQb) {
-            orQb.where('is_encrypted', 1)
-              .andWhereRaw('LOWER(title) LIKE LOWER(?)', [kw]);
-          });
+        // 只搜索标题，不搜索内容
+        qb.whereRaw('LOWER(title) LIKE LOWER(?)', [kw]);
       });
     }
 
@@ -177,44 +206,65 @@ async create(env: Env, uid: number, body: NoteCreateBody) {
     if (isStar !== null) query.andWhere('is_star', isStar === '1' ? 1 : 0);
     if (isTop !== null) query.andWhere('is_top', isTop === '1' ? 1 : 0);
 
-    const countResult = await query.clone().clearSelect().count('* as total').first();
+    const [countResult, noteList] = await Promise.all([
+      query.clone().clearSelect().count('* as total').first(),
+      query
+        .orderBy('is_top', 'desc')
+        .orderBy('updated_at', 'desc')
+        .limit(size)
+        .offset(offset)
+    ]);
+
     const total = countResult ? Number(countResult.total) : 0;
 
-    const noteList = await query
-      .orderBy('is_top', 'desc')
-      .orderBy('updated_at', 'desc')
-      .limit(size)
-      .offset(offset);
-
-    const noteIds = noteList.map(n => n.id);
-    const categoryRels = noteIds.length
-      ? await knex('note_category_rel')
+    if (noteList.length > 0) {
+      const noteIds = noteList.map(n => n.id);
+      
+      const [categoryRels, tagRels] = await Promise.all([
+        knex('note_category_rel')
           .join('note_category', 'note_category_rel.category_id', 'note_category.id')
           .whereIn('note_id', noteIds)
           .andWhere('note_category_rel.is_deleted', 0)
-      : [];
-
-    const tagRels = noteIds.length
-      ? await knex('note_tag_rel')
+          .select('note_id', 'category_id', 'note_category.name'),
+        knex('note_tag_rel')
           .join('note_tag', 'note_tag_rel.tag_id', 'note_tag.id')
           .whereIn('note_id', noteIds)
           .andWhere('note_tag_rel.is_deleted', 0)
-      : [];
+          .select('note_id', 'note_tag.name')
+      ]);
 
-    const list = noteList.map(row => {
-      const cate = categoryRels.filter(c => c.note_id === row.id);
-      const tags = tagRels.filter(t => t.note_id === row.id);
-      return {
+      const categoryMap = new Map();
+      const tagMap = new Map();
+
+      categoryRels.forEach(c => {
+        if (!categoryMap.has(c.note_id)) {
+          categoryMap.set(c.note_id, { ids: [], names: [] });
+        }
+        const data = categoryMap.get(c.note_id);
+        data.ids.push(c.category_id);
+        data.names.push(c.name);
+      });
+
+      tagRels.forEach(t => {
+        if (!tagMap.has(t.note_id)) {
+          tagMap.set(t.note_id, []);
+        }
+        tagMap.get(t.note_id).push(t.name);
+      });
+
+      const list = noteList.map(row => ({
         ...row,
-        categoryIds: cate.map(c => c.category_id),
-        categoryNames: cate.map(c => c.name),
-        tagNames: tags.map(t => t.name),
-        tags: tags.map(t => t.name),
-        content: row.is_encrypted === 1 ? null : row.content
-      };
-    });
+        categoryIds: categoryMap.get(row.id)?.ids || [],
+        categoryNames: categoryMap.get(row.id)?.names || [],
+        tagNames: tagMap.get(row.id) || [],
+        // content 字段在列表查询中不返回
+        content: undefined
+      }));
 
-    return jsonResp({ list, total });
+      return jsonResp({ list, total });
+    }
+
+    return jsonResp({ list: [], total: 0 });
   },
 
   async detail(env: Env, uid: number, nid: string, search?: URLSearchParams) {
@@ -282,7 +332,6 @@ async create(env: Env, uid: number, body: NoteCreateBody) {
           .first();
         if (!origin) throw new Error("笔记不存在");
 
-        // 保存历史版本
         await trx('note_history').insert({
           note_id: nid,
           user_id: uid,
@@ -350,7 +399,7 @@ async create(env: Env, uid: number, body: NoteCreateBody) {
           is_encrypted: is_encrypted ?? 0,
           updated_at: updateTime,
         };
-        // 乐观锁版本+1
+        
         await trx('notes').where({ id: nid, user_id: uid, is_deleted: 0 }).update('version', knex.raw('version + 1'));
         if (body.is_top !== undefined) updateData.is_top = body.is_top;
         if (body.is_star !== undefined) updateData.is_star = body.is_star;
@@ -359,7 +408,6 @@ async create(env: Env, uid: number, body: NoteCreateBody) {
         await trx('notes').where({ id: nid, user_id: uid, is_deleted: 0 }).update(updateData);
         const updatedNote = await trx('notes').where({ id: nid, is_deleted: 0 }).first();
 
-        // 分类：先逻辑删除旧关联，再新增
         if (categoryIds !== undefined) {
           await trx('note_category_rel')
             .where({ note_id: nid, is_deleted: 0 })
@@ -370,20 +418,43 @@ async create(env: Env, uid: number, body: NoteCreateBody) {
           }
         }
 
-        // 标签
         if (tagNames !== undefined) {
           await trx('note_tag_rel')
             .where({ note_id: nid, is_deleted: 0 })
-            .update({ is_deleted: 1, updated_at:updateTime });
-          for (const name of tagNames) {
-            let tag = await trx('note_tag').where({ user_id: uid, name, is_deleted: 0 }).first();
-            if (!tag) {
-              await trx('note_tag').insert({ user_id: uid, name, is_deleted: 0 });
-              tag = await trx('note_tag').where({ user_id: uid, name, is_deleted: 0 }).first();
-            }
-            await trx('note_tag_rel').insert({ note_id: nid, tag_id: tag.id, is_deleted: 0 })
-              .onConflict(['note_id', 'tag_id', 'is_deleted']).ignore();
+            .update({ is_deleted: 1, updated_at: updateTime });
+          
+          // 批量处理标签
+          const uniqueTagNames = [...new Set(tagNames)];
+          const existingTags = await trx('note_tag')
+            .where({ user_id: uid, is_deleted: 0 })
+            .whereIn('name', uniqueTagNames)
+            .select('id', 'name');
+          
+          const existingTagMap = new Map(existingTags.map(tag => [tag.name, tag.id]));
+          const newTagNames = uniqueTagNames.filter(name => !existingTagMap.has(name));
+          
+          if (newTagNames.length) {
+            const newTags = newTagNames.map(name => ({ user_id: uid, name, is_deleted: 0 }));
+            await trx('note_tag').insert(newTags);
+            
+            const newTagRecords = await trx('note_tag')
+              .where({ user_id: uid, is_deleted: 0 })
+              .whereIn('name', newTagNames)
+              .select('id', 'name');
+            
+            newTagRecords.forEach(tag => existingTagMap.set(tag.name, tag.id));
           }
+          
+          const tagRels = uniqueTagNames.map(name => ({
+            note_id: nid,
+            tag_id: existingTagMap.get(name)!,
+            is_deleted: 0
+          }));
+          
+          await trx('note_tag_rel')
+            .insert(tagRels)
+            .onConflict(['note_id', 'tag_id', 'is_deleted'])
+            .ignore();
         }
 
         if (updatedNote.is_encrypted === 1) updatedNote.content = null;
@@ -399,7 +470,7 @@ async create(env: Env, uid: number, body: NoteCreateBody) {
   // 移入回收站（逻辑删除）
   async moveRecycle(env: Env, uid: number, nid: string) {
     const knex = createKnex(env);
-    const expire =  knex.raw(`CURRENT_TIMESTAMP + INTERVAL '30' DAY`);
+    const expire = knex.raw(`CURRENT_TIMESTAMP + INTERVAL '30' DAY`);
     const affected = await knex('notes')
       .where({ id: nid, user_id: uid, is_deleted: 0 })
       .update({
@@ -455,11 +526,9 @@ async create(env: Env, uid: number, body: NoteCreateBody) {
 
     try {
       await knex.transaction(async trx => {
-        // 先保存当前版本
         await trx('note_history').insert({
           note_id: nid, user_id: uid, title: note.title, content: note.content, is_deleted: 0
         });
-        // 回滚数据，更新时间+乐观锁
         await trx('notes').where({ id: nid, is_deleted: 0 }).update({
           title: history.title,
           content: history.content,
@@ -501,23 +570,39 @@ async create(env: Env, uid: number, body: NoteCreateBody) {
   // 批量导出笔记
   async exportAllNote(env: Env, uid: number, search: URLSearchParams) {
     const knex = createKnex(env);
-    const page = parseInt(search.get("page") || "1");
-    const size = parseInt(search.get("size") || "0");
+    const page = Math.max(1, parseInt(search.get("page") || "1"));
+    const size = Math.min(1000, Math.max(0, parseInt(search.get("size") || "0")));
     const keyword = search.get("q")?.trim();
     const isDraftStr = search.get("is_draft");
     const isStarStr = search.get("is_star");
     const isDelete = search.get("trash") === "1" || search.get("is_deleted") === "1";
     const offset = size > 0 ? (page - 1) * size : 0;
 
-    let query = knex('notes').where({ user_id: uid, is_deleted: isDelete ? 1 : 0 });
+    // 导出时需要 content，但只搜索 title
+    let query = knex('notes')
+      .select(
+        'id',
+        'title',
+        'content',
+        'is_encrypted',
+        'is_top',
+        'is_star',
+        'is_draft',
+        'is_deleted',
+        'created_at',
+        'updated_at',
+        'version'
+      )
+      .where({ user_id: uid, is_deleted: isDelete ? 1 : 0 });
+
     if (keyword) {
       const kw = `%${keyword}%`;
       query.andWhere(function (qb) {
-        qb.where('is_encrypted', 0)
-          .andWhereRaw('LOWER(title) LIKE LOWER(?) OR LOWER(content) LIKE LOWER(?)', [kw, kw])
-          .orWhere(q => q.where('is_encrypted', 1).andWhereRaw('LOWER(title) LIKE LOWER(?)', [kw]));
+        // 导出时也只搜索标题，不搜索内容
+        qb.whereRaw('LOWER(title) LIKE LOWER(?)', [kw]);
       });
     }
+    
     if (isDraftStr !== null) query.andWhere('is_draft', isDraftStr === '1' ? 1 : 0);
     if (isStarStr !== null) query.andWhere('is_star', isStarStr === '1' ? 1 : 0);
 
@@ -526,31 +611,34 @@ async create(env: Env, uid: number, body: NoteCreateBody) {
 
     const rows = await query;
     const noteIds = rows.map(r => r.id);
-    const categoryRels = noteIds.length
-      ? await knex('note_category_rel')
+    
+    if (noteIds.length > 0) {
+      const [categoryRels, tagRels] = await Promise.all([
+        knex('note_category_rel')
           .join('note_category', 'note_category_rel.category_id', 'note_category.id')
           .whereIn('note_id', noteIds)
-          .andWhere('note_category_rel.is_deleted', 0)
-      : [];
-    const tagRels = noteIds.length
-      ? await knex('note_tag_rel')
+          .andWhere('note_category_rel.is_deleted', 0),
+        knex('note_tag_rel')
           .join('note_tag', 'note_tag_rel.tag_id', 'note_tag.id')
           .whereIn('note_id', noteIds)
           .andWhere('note_tag_rel.is_deleted', 0)
-      : [];
+      ]);
 
-    const result = rows.map(row => {
-      const cate = categoryRels.filter(c => c.note_id === row.id);
-      const tags = tagRels.filter(t => t.note_id === row.id);
-      return {
-        ...row,
-        categoryIds: cate.map(c => c.category_id),
-        categoryNames: cate.map(c => c.name),
-        tagNames: tags.map(t => t.name),
-        content: row.is_encrypted === 1 ? null : row.content
-      };
-    });
+      const result = rows.map(row => {
+        const cate = categoryRels.filter(c => c.note_id === row.id);
+        const tags = tagRels.filter(t => t.note_id === row.id);
+        return {
+          ...row,
+          categoryIds: cate.map(c => c.category_id),
+          categoryNames: cate.map(c => c.name),
+          tagNames: tags.map(t => t.name),
+          content: row.is_encrypted === 1 ? null : row.content
+        };
+      });
 
-    return jsonResp(result, CODE.SUCCESS, "查询成功");
+      return jsonResp(result, CODE.SUCCESS, "查询成功");
+    }
+
+    return jsonResp([], CODE.SUCCESS, "查询成功");
   }
 };

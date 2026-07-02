@@ -3,7 +3,7 @@ import { createKnex } from '../config/knex'
 import { jsonResp } from "../utils/response";
 import { CODE } from "../types/response";
 
-export class NoteHistoryController {
+export class HistoryController {
 
   /**
    * 获取笔记所有历史版本

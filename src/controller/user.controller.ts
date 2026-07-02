@@ -1,11 +1,9 @@
 import { createKnex } from "../config/knex";
-import { createRedis } from "../config/redis";
+import { createCache, CacheAdapter } from "../config/redis";
 import { hashPassword, comparePassword } from "../utils/password";
 import { jsonResp } from "../utils/response";
 import { CODE } from "../types/response";
-import { requireAdmin } from "../middleware/auth"
 import type { Env } from "../types/env";
-import type { UserJWTPayload } from "../types/model"
 import { v4 as uuidv4 } from "uuid";
 import { sendChangeEmail } from "../utils/email";
 
@@ -18,7 +16,6 @@ export const UserController = {
    */
   async getCurrentUserInfo(env: Env, uid: number) {
     const knex = createKnex(env);
-
     const user = await knex('users')
       .select(
         'id',
@@ -125,7 +122,7 @@ export const UserController = {
     try {
       await knex.transaction(async (trx) => {
         if (Object.keys(updateData).length > 0) {
-          updateData.updated_at =  knex.fn.now();
+          updateData.updated_at = updateTime;
           await trx('users')
             .where({ id: uid, is_deleted: 0 })
             .update(updateData);
@@ -134,12 +131,11 @@ export const UserController = {
         // 写入邮箱激活临时记录
         if (needSendEmailActivate) {
           const activateToken = uuidv4();
-      
 
           // 先软删除该用户旧的未激活邮箱记录，再新增
           await trx('user_email_activate')
             .where({ user_id: uid, is_deleted: 0 })
-            .update({ is_deleted: 1, updated_at: knex.fn.now() });
+            .update({ is_deleted: 1, updated_at: updateTime });
 
           await trx('user_email_activate').insert({
             user_id: uid,
@@ -184,7 +180,7 @@ export const UserController = {
     }
 
     const knex = createKnex(env);
-    const redis = createRedis(env);
+    const cache: CacheAdapter = createCache(env);
 
     const user = await knex('users')
       .select('password_hash')
@@ -217,7 +213,7 @@ export const UserController = {
       .where({ user_id: uid, is_deleted: 0 });
 
     for (const item of tokenList) {
-      await redis.set(`token:black:${item.refresh_token}`, "1", { ex: TOKEN_BLACK_EXPIRE });
+      await cache.set(`token:black:${item.refresh_token}`, "1", TOKEN_BLACK_EXPIRE);
     }
     await knex('user_refresh_token')
       .where({ user_id: uid, is_deleted: 0 })
@@ -234,7 +230,7 @@ export const UserController = {
     uid: number,
   ) {
     const knex = createKnex(env);
-    const redis = createRedis(env);
+    const cache: CacheAdapter = createCache(env);
     const updateTime = knex.fn.now();
 
     try {
@@ -261,9 +257,7 @@ export const UserController = {
           .where({ user_id: uid, is_deleted: 0 });
 
         for (const item of tokenList) {
-          await redis.set(`token:black:${item.refresh_token}`, "1", {
-            ex: TOKEN_BLACK_EXPIRE
-          });
+          await cache.set(`token:black:${item.refresh_token}`, "1", TOKEN_BLACK_EXPIRE);
         }
         await trx('user_refresh_token')
           .where({ user_id: uid, is_deleted: 0 })
@@ -277,10 +271,7 @@ export const UserController = {
     }
   },
 
-  async getUserList(env: Env, payload: UserJWTPayload, search: URLSearchParams = new URLSearchParams()) {
-    const authErr = requireAdmin(payload);
-    if (authErr) return authErr;
-
+  async getUserList(env: Env, search: URLSearchParams = new URLSearchParams()) {
     const knex = createKnex(env);
     const page = parseInt(search.get('page') || '1')
     const pageSize = parseInt(search.get('pageSize') || '10')
@@ -317,11 +308,8 @@ export const UserController = {
 
   async updateUserInfo(
     env: Env,
-    payload: UserJWTPayload,
     body: { userId: bigint; role?: string; isFrozen?: boolean }
   ) {
-    const authErr = requireAdmin(payload);
-    if (authErr) return authErr;
     const knex = createKnex(env);
     const { userId, role, isFrozen } = body;
     const updateTime = knex.fn.now();
@@ -345,11 +333,8 @@ export const UserController = {
 
   async adminResetUserPwd(
     env: Env,
-    payload: UserJWTPayload,
     body: { userId: bigint; newPwd: string }
   ) {
-    const authErr = requireAdmin(payload);
-    if (authErr) return authErr;
     const knex = createKnex(env);
     const saltRounds = parseInt(env.BCRYPT_SALT_ROUND);
     const hash = await hashPassword(body.newPwd, saltRounds);

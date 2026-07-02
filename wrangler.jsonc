@@ -28,8 +28,15 @@
       "localConnectionString": ""
     }
   ],
+  "kv_namespaces":[
+    {
+      "binding": "NOTE_KV",
+      "id": "5b2d2ff9d491403dbe1337fe3f5f073e",
+      "preview_id": "bbc923b54117429aa44124473b0584a5"
+    }
+  ],
   "vars": {
-    "DB_CLIENT": "pg",
+    "DB_CLIENT": "mysql2",
     "DB_SSL": "true",
     "ACCESS_TOKEN_EXPIRE": "1h",
     "REFRESH_TOKEN_EXPIRE": "30d",
@@ -39,7 +46,7 @@
     "RATE_LIMIT_WINDOW_SEC": "60",
     "SUPABASE_STORAGE_BUCKET": "note",
     "SUPABASE_URL": "https://qdayueqodhquefczraii.supabase.co",
-    "REDIS_URL": "https://master-hound-77781.upstash.io",
+    //"REDIS_URL": "https://master-hound-77781.upstash.io",
     "APP_BASE_URL": "http://n.lau.cc.cd",
     "EMAIL_FROM": "admin@fred.dpdns.org",
     "ZHIPU_BASE_URL": "https://open.bigmodel.cn/api/paas/v4/chat/completions",   

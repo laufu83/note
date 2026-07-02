@@ -1,38 +1,69 @@
 import { v4 as uuidv4 } from "uuid";
-import { createRedis } from "../config/redis";
+import { createCache } from "../config/redis";
 import { jsonResp } from "./response";
 import { CODE } from "../types/response";
 import type { Env } from "../types/env";
 
-export async function rateLimitCheck(req: Request, uid: number | null, env: Env) {
-  const redis = createRedis(env);
-  const ip = req.headers.get("cf-connecting-ip") || req.headers.get("x-forwarded-for") || "127.0.0.1";
-  const window = parseInt(env.RATE_LIMIT_WINDOW_SEC);
-  const ipMax = parseInt(env.RATE_LIMIT_IP_MAX);
-  const userMax = parseInt(env.RATE_LIMIT_USER_MAX);
+/**
+ * 滑动窗口限流（IP + 用户双维度）
+ * 自动兼容 Redis / KV / 开发内存缓存
+ * @param req 请求对象
+ * @param uid 当前登录用户ID，公开接口传null
+ * @param env 环境变量
+ * @returns 触发限流返回429响应，否则返回null放行
+ */
+export async function rateLimitCheck(
+  req: Request,
+  uid: number | null,
+  env: Env
+): Promise<Response | null> {
+  // 复用全局缓存适配器
+  const cache = createCache(env);
+
+  // 获取客户端真实IP
+  const ip = req.headers.get("cf-connecting-ip")
+    || req.headers.get("x-forwarded-for")
+    || "127.0.0.1";
+
+  // 参数容错兜底
+  const windowSec = parseInt(env.RATE_LIMIT_WINDOW_SEC || "60", 10) || 60;
+  const ipMax = parseInt(env.RATE_LIMIT_IP_MAX || "60", 10) || 60;
+  const userMax = parseInt(env.RATE_LIMIT_USER_MAX || "120", 10) || 120;
+
   const now = Date.now();
-  const windowStart = now - window * 1000;
+  const windowStartTs = now - windowSec * 1000;
+  const uniqueMember = `${now}-${uuidv4()}`;
 
   const ipKey = `ratelimit:ip:${ip}`;
-  // 全小写方法 zremrangebyscore
-  await redis.zremrangebyscore(ipKey, 0, windowStart);
-  const ipCount = await redis.zcard(ipKey);
-  if (ipCount >= ipMax) {
-    return jsonResp(null, CODE.RATE_LIMIT, "请求过于频繁，请稍后再试", 429);
-  }
-  await redis.zadd(ipKey, { score: now, member: `${now}-${uuidv4()}` });
-  await redis.expire(ipKey, window);
+  const userKey = uid ? `ratelimit:user:${uid}` : null;
 
-  if (uid) {
-    const userKey = `ratelimit:user:${uid}`;
-    await redis.zremrangebyscore(userKey, 0, windowStart);
-    const userCount = await redis.zcard(userKey);
-    if (userCount >= userMax) {
-      return jsonResp(null, CODE.RATE_LIMIT, "操作频繁，请稍后", 429);
+  try {
+    // 1. 清理窗口外过期数据
+    await cache.zremrangebyscore(ipKey, 0, windowStartTs);
+    // 2. 统计当前窗口请求数
+    const ipCount = await cache.zcard(ipKey);
+    if (ipCount >= ipMax) {
+      return jsonResp(null, CODE.RATE_LIMIT, "当前IP请求过于频繁，请稍后再试", 429);
     }
-    await redis.zadd(userKey, { score: now, member: `${now}-${uuidv4()}` });
-    await redis.expire(userKey, window);
-  }
+    // 3. 写入本次请求记录 + 设置key过期
+    await cache.zadd(ipKey, { score: now, member: uniqueMember });
+    await cache.expire(ipKey, windowSec);
 
-  return null;
+    // 用户维度限流
+    if (userKey) {
+      await cache.zremrangebyscore(userKey, 0, windowStartTs);
+      const userCount = await cache.zcard(userKey);
+      if (userCount >= userMax) {
+        return jsonResp(null, CODE.RATE_LIMIT, "账号操作过于频繁，请稍后再试", 429);
+      }
+      await cache.zadd(userKey, { score: now, member: uniqueMember });
+      await cache.expire(userKey, windowSec);
+    }
+
+    return null;
+  } catch (err) {
+    // 缓存异常兜底：限流服务故障直接放行，不阻断业务
+    console.error("[RateLimit] 限流缓存异常", err);
+    return null;
+  }
 }
