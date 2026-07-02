@@ -402,16 +402,17 @@ export function createCache(
 
   if (type === CacheType.AUTO) {
     // 优先级：Redis > KV > 开发环境内存兜底
-    if (hasRedis) {
+     if (isDev) {
+      console.log('[Cache] 开发环境，使用内存缓存（重启丢失数据）');
+      instance = new MemoryAdapter(config);
+    }
+    else if (hasRedis) {
       console.log('[Cache] 自动选择 Redis 作为缓存后端');
       instance = new RedisAdapter(env);
     } else if (hasKV) {
       console.log('[Cache] Redis 不可用，自动降级到 KV');
       instance = new KVAdapter(env.NOTE_KV, config);
-    } else if (isDev) {
-      console.log('[Cache] 开发环境无Redis、无KV，使用内存缓存兜底（重启丢失数据）');
-      instance = new MemoryAdapter(config);
-    } else {
+    }else {
       throw new Error('未配置任何缓存后端，请配置 Redis 或 NOTE_KV');
     }
   } else if (type === CacheType.REDIS) {
