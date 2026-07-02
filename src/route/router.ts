@@ -703,8 +703,8 @@ export async function dispatch(req: Request, env: Env): Promise<Response> {
   // ==========================================
   // 1. 全局限流检查（基于 IP）
   // ==========================================
-  const globalLimitRes = await rateLimitCheck(req, null, env);
-  if (globalLimitRes) return globalLimitRes;
+  //const globalLimitRes = await rateLimitCheck(req, null, env);
+  //if (globalLimitRes) return globalLimitRes;
 
   // ==========================================
   // 2. 路由匹配
@@ -753,8 +753,8 @@ export async function dispatch(req: Request, env: Env): Promise<Response> {
   // ==========================================
   // 6. 用户级限流检查（基于用户 ID）
   // ==========================================
-  const userLimitRes = await rateLimitCheck(req, payload.uid, env);
-  if (userLimitRes) return userLimitRes;
+ // const userLimitRes = await rateLimitCheck(req, payload.uid, env);
+  //if (userLimitRes) return userLimitRes;
 
   // ==========================================
   // 7. 执行路由处理器

@@ -35,7 +35,7 @@
     }
   ],
   "vars": {
-    "DB_CLIENT": "mysql2",
+    "DB_CLIENT": "pg",
     "DB_SSL": "true",
     "ACCESS_TOKEN_EXPIRE": "1h",
     "REFRESH_TOKEN_EXPIRE": "30d",
