@@ -3,7 +3,6 @@ import type { Env } from "../types/env";
 import type {
   KVNamespace,
   KVNamespacePutOptions,
-  KVNamespaceListKey,
 } from "@cloudflare/workers-types";
 
 // ============================================
@@ -398,7 +397,7 @@ export function createCache(
 
   const hasRedis = !!(env.REDIS_URL && env.REDIS_TOKEN);
   const hasKV = !!env.NOTE_KV;
-  const isDev = env.ENVIRONMENT !== 'production';
+  const isDev = env.ENVIRONMENT === 'dev';
   let instance: CacheAdapter;
 
   if (type === CacheType.AUTO) {

@@ -79,7 +79,7 @@ function attachSqlLogger(db: KnexInstance, enableLog: boolean) {
 
 export function createKnex(env: Env): KnexInstance {
   const client = env.DB_CLIENT || 'pg';
-  const isDev = env.ENVIRONMENT !== 'production';
+  const isDev = env.ENVIRONMENT === 'dev';
 
   // ===================== 移除全局单例，每次请求全新创建 =====================
   if (client === 'pg') {
